@@ -50,3 +50,22 @@ gets rejected and rewritten, not patched.
 If a task is ambiguous or underspecified, stop and ask a clarifying
 question instead of guessing. A wrong assumption compounds across the
 whole codebase — a 30-second question doesn't.
+
+## Git workflow
+- After completing every task, always stage, commit, and push automatically.
+  Never leave completed work uncommitted.
+- Commit messages follow Conventional Commits format:
+  <type>: <short summary>, types are feat, fix, refactor, test, chore, docs.
+  Example: feat: implement constraint-based route scoring in planner
+- The summary line is under 72 characters, written in imperative mood
+  ("add", not "added" or "adds").
+- If the change is non-trivial, include a short body (2-4 bullet points)
+  explaining what changed and why — not a restatement of the diff.
+- Never commit with generic messages like "update", "changes", "fix stuff",
+  or "wip". If you can't describe the change in one clear sentence, the
+  task probably wasn't scoped tightly enough — say so instead of committing
+  vaguely.
+- Never commit failing tests or broken builds. Run tests before committing;
+  if they fail, fix or report the failure instead of pushing broken code.
+- One commit per logical unit of work — don't bundle unrelated changes
+  (e.g. planner logic + unrelated config tweak) into a single commit.
