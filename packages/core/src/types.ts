@@ -14,6 +14,10 @@ export interface PaymentIntent {
 
 export interface CapabilityEntry {
   pair: [string, string];
+  /**
+   * Units of the "to" asset received per one unit of the "from" asset.
+   */
+  rate: number;
   adapter: string;
   action: "ConvertAsset" | "AcquireAsset" | "Bridge";
   cost: number;
@@ -42,5 +46,6 @@ export interface ExecutionPlan {
   estimatedCost: string;
   estimatedTime: string;
   estimatedOutput: string;
+  estimatedPayerAmount: string;
   steps: ExecutionStep[];
 }

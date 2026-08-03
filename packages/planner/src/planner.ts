@@ -41,6 +41,7 @@ interface PathMetrics {
   reliability: number;
   liquidityScore: number;
   reversible: boolean;
+  rate: number;
 }
 
 interface FeasiblePath {
@@ -57,14 +58,16 @@ function aggregatePath(edges: CapabilityEntry[]): PathMetrics {
   let reliability = 1;
   let liquidityScore = 1;
   let reversible = true;
+  let rate = 1;
   for (const edge of edges) {
     cost += edge.cost;
     latencyMs += edge.latencyMs;
     reliability = Math.min(reliability, edge.reliability);
     liquidityScore = Math.min(liquidityScore, edge.liquidityScore);
     reversible = reversible && edge.reversible;
+    rate *= edge.rate;
   }
-  return { cost, latencyMs, reliability, liquidityScore, reversible };
+  return { cost, latencyMs, reliability, liquidityScore, reversible, rate };
 }
 
 function buildAdjacency(registry: CapabilityRegistry): Adjacency {
@@ -156,7 +159,9 @@ function isPathFeasible(
   }
   if (intent.constraints.deadline !== undefined) {
     const latencySeconds = metrics.latencyMs / 1000;
-    if (latencySeconds > intent.constraints.deadline) {
+    const remainingSeconds =
+      intent.constraints.deadline - Math.floor(Date.now() / 1000);
+    if (remainingSeconds <= 0 || latencySeconds > remainingSeconds) {
       return false;
     }
   }
@@ -183,6 +188,14 @@ function resolveFallbackAdapters(
     .filter((candidate) => candidate.adapter !== edge.adapter)
     .sort((a, b) => scorePath([a], weights) - scorePath([b], weights))
     .map((candidate) => candidate.adapter);
+}
+
+function parseAmount(amount: string, label: string): number {
+  const parsed = Number.parseFloat(amount);
+  if (Number.isNaN(parsed)) {
+    throw new Error(`Invalid ${label} in intent: "${amount}"`);
+  }
+  return parsed;
 }
 
 function buildPlan(
@@ -214,11 +227,15 @@ function buildPlan(
   stepId += 1;
   steps.push({ stepId, action: "VerifySettlement", asset: intent.receiverAsset });
 
+  const receiverAmount = parseAmount(intent.receiverAmount, "receiverAmount");
+  const payerAmount = receiverAmount / path.metrics.rate;
+
   return {
     planId: randomUUID(),
     estimatedCost: String(path.metrics.cost),
     estimatedTime: String(path.metrics.latencyMs),
     estimatedOutput: intent.receiverAmount,
+    estimatedPayerAmount: String(payerAmount),
     steps,
   };
 }

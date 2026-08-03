@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { PaymentIntent } from "../../core/src/types";
+import type { CapabilityEntry, PaymentIntent } from "../../core/src/types";
 import { CapabilityRegistry } from "../../registry/src/registry";
 import { seedRegistry } from "../../registry/src/seed";
 import { ExecutionPlanner } from "./planner";
@@ -12,6 +12,21 @@ function makeIntent(overrides: Partial<PaymentIntent> = {}): PaymentIntent {
     receiverAmount: "100",
     recipient: "0xRecipient",
     constraints: {},
+    ...overrides,
+  };
+}
+
+function makeCapability(overrides: Partial<CapabilityEntry> = {}): CapabilityEntry {
+  return {
+    pair: ["FXRP", "USDT0"],
+    rate: 1.25,
+    adapter: "SparkDEX",
+    action: "ConvertAsset",
+    cost: 0.003,
+    latencyMs: 2500,
+    reliability: 0.97,
+    reversible: true,
+    liquidityScore: 0.85,
     ...overrides,
   };
 }
@@ -31,6 +46,7 @@ describe("ExecutionPlanner", () => {
     expect(plan.estimatedCost).toBe("0.003");
     expect(plan.estimatedTime).toBe("2500");
     expect(plan.estimatedOutput).toBe("100");
+    expect(plan.estimatedPayerAmount).toBe("80");
     expect(plan.steps).toHaveLength(4);
     expect(plan.steps[0]).toMatchObject({ stepId: 1, action: "AcquireAsset", asset: "FXRP" });
     expect(plan.steps[1]).toMatchObject({
@@ -57,6 +73,7 @@ describe("ExecutionPlanner", () => {
 
     expect(plan.estimatedCost).toBe("0.002");
     expect(plan.estimatedTime).toBe("3200");
+    expect(plan.estimatedPayerAmount).toBe("0.04");
     expect(plan.steps[1]).toMatchObject({ to: "FLR", preferredAdapter: "SparkDEX" });
   });
 
@@ -81,27 +98,52 @@ describe("ExecutionPlanner", () => {
 
   it("rejects a route that misses the deadline", () => {
     const planner = new ExecutionPlanner();
+    const deadline = Math.floor(Date.now() / 1000) + 2;
 
     expect(() =>
       planner.plan(
-        makeIntent({ constraints: { deadline: 2 } }),
+        makeIntent({ constraints: { deadline } }),
         makeSeededRegistry()
       )
     ).toThrow(/No feasible route from FXRP to USDT0/);
   });
 
+  it("rejects a route when the deadline is already in the past", () => {
+    const planner = new ExecutionPlanner();
+    const deadline = Math.floor(Date.now() / 1000) - 5;
+
+    expect(() =>
+      planner.plan(
+        makeIntent({ constraints: { deadline } }),
+        makeSeededRegistry()
+      )
+    ).toThrow(/No feasible route from FXRP to USDT0/);
+  });
+
+  it("accepts a route when the deadline is far enough in the future", () => {
+    const planner = new ExecutionPlanner();
+    const deadline = Math.floor(Date.now() / 1000) + 60;
+
+    const plan = planner.plan(
+      makeIntent({ constraints: { deadline } }),
+      makeSeededRegistry()
+    );
+
+    expect(plan.steps).toHaveLength(4);
+  });
+
   it("rejects a route whose only edge has below-minimum liquidity", () => {
     const registry = makeSeededRegistry();
-    registry.register({
-      pair: ["FXRP", "USDX"],
-      adapter: "RiskyDEX",
-      action: "ConvertAsset",
-      cost: 0.001,
-      latencyMs: 1000,
-      reliability: 0.9,
-      reversible: true,
-      liquidityScore: 0.4,
-    });
+    registry.register(
+      makeCapability({
+        pair: ["FXRP", "USDX"],
+        adapter: "RiskyDEX",
+        cost: 0.001,
+        latencyMs: 1000,
+        reliability: 0.9,
+        liquidityScore: 0.4,
+      })
+    );
     const planner = new ExecutionPlanner();
 
     expect(() =>
@@ -111,16 +153,16 @@ describe("ExecutionPlanner", () => {
 
   it("selects different routes for cost vs speed priority with multiple adapters", () => {
     const registry = makeSeededRegistry();
-    registry.register({
-      pair: ["FXRP", "USDT0"],
-      adapter: "Kinetic",
-      action: "ConvertAsset",
-      cost: 0.05,
-      latencyMs: 2400,
-      reliability: 0.98,
-      reversible: true,
-      liquidityScore: 0.9,
-    });
+    registry.register(
+      makeCapability({
+        adapter: "Kinetic",
+        rate: 1.2,
+        cost: 0.05,
+        latencyMs: 2400,
+        reliability: 0.98,
+        liquidityScore: 0.9,
+      })
+    );
     const planner = new ExecutionPlanner();
 
     const costPlan = planner.plan(
@@ -136,5 +178,35 @@ describe("ExecutionPlanner", () => {
     expect(costPlan.steps[1].fallbackAdapters).toEqual(["Kinetic"]);
     expect(speedPlan.steps[1].preferredAdapter).toBe("Kinetic");
     expect(speedPlan.steps[1].fallbackAdapters).toEqual(["SparkDEX"]);
+  });
+
+  it("computes estimatedPayerAmount across a 2-hop path", () => {
+    const registry = new CapabilityRegistry();
+    registry.register(
+      makeCapability({
+        pair: ["FXRP", "FLR"],
+        rate: 2500,
+        cost: 0.002,
+        latencyMs: 3200,
+        reliability: 0.96,
+        liquidityScore: 0.78,
+      })
+    );
+    registry.register(
+      makeCapability({
+        pair: ["FLR", "USDT0"],
+        rate: 0.5,
+        cost: 0.001,
+        latencyMs: 1500,
+        reliability: 0.97,
+        liquidityScore: 0.85,
+      })
+    );
+    const planner = new ExecutionPlanner();
+
+    const plan = planner.plan(makeIntent({ receiverAsset: "USDT0" }), registry);
+
+    expect(plan.steps.filter((step) => step.action === "ConvertAsset")).toHaveLength(2);
+    expect(plan.estimatedPayerAmount).toBe("0.08");
   });
 });
