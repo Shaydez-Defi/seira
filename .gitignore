@@ -2,3 +2,5 @@ node_modules/
 dist/
 *.tsbuildinfo
 .env
+packages/contracts/artifacts/
+packages/contracts/cache/

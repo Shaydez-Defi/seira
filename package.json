@@ -7,7 +7,8 @@
     "packages/core",
     "packages/planner",
     "packages/runtime",
-    "packages/registry"
+    "packages/registry",
+    "packages/contracts"
   ],
   "scripts": {
     "build": "tsc",
