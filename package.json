@@ -1,0 +1,30 @@
+{
+  "name": "seira",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "workspaces": [
+    "packages/core",
+    "packages/planner",
+    "packages/runtime",
+    "packages/registry"
+  ],
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Shaydez-Defi/seira.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Shaydez-Defi/seira/issues"
+  },
+  "homepage": "https://github.com/Shaydez-Defi/seira#readme",
+  "devDependencies": {
+    "typescript": "^7.0.2"
+  }
+}
