@@ -38,6 +38,11 @@ gets rejected and rewritten, not patched.
   zero amount, etc.). No module is "done" without tests.
 - Never mark a task complete if tests are failing or missing.
 
+## Package setup
+- Every new package must have a "test": "vitest run" script in its
+  package.json from the moment its first test file is created — this
+  is not optional or a follow-up step, it's part of creating the package.
+
 ## Style
 - Consistent naming: camelCase for variables/functions, PascalCase for
   types/interfaces, no abbreviations unless already used in types.ts
