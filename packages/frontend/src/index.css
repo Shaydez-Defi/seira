@@ -1,0 +1,7 @@
+/* Vite starter boilerplate removed. The Seira component injects its own
+   design tokens and full-viewport layout via its <style> block, so the only
+   global reset needed here is the default body margin that would otherwise
+   leave a small gap around the page edges. */
+body {
+  margin: 0;
+}
