@@ -20,7 +20,7 @@ function makeCapability(overrides: Partial<CapabilityEntry> = {}): CapabilityEnt
   return {
     pair: ["FXRP", "USDT0"],
     rate: 1.25,
-    adapter: "SparkDEX",
+    adapter: "TestSwapAdapter",
     action: "ConvertAsset",
     cost: 0.003,
     latencyMs: 2500,
@@ -55,7 +55,7 @@ describe("ExecutionPlanner", () => {
       from: "FXRP",
       to: "USDT0",
       asset: "USDT0",
-      preferredAdapter: "SparkDEX",
+      preferredAdapter: "TestSwapAdapter",
       fallbackAdapters: [],
     });
     expect(plan.steps[2]).toMatchObject({
@@ -67,14 +67,14 @@ describe("ExecutionPlanner", () => {
     expect(plan.steps[3]).toMatchObject({ stepId: 4, action: "VerifySettlement", asset: "USDT0" });
   });
 
-  it("plans the direct FXRP -> FLR route", () => {
+  it("plans the direct FXRP -> WFLR route", () => {
     const planner = new ExecutionPlanner();
-    const plan = planner.plan(makeIntent({ receiverAsset: "FLR" }), makeSeededRegistry());
+    const plan = planner.plan(makeIntent({ receiverAsset: "WFLR" }), makeSeededRegistry());
 
     expect(plan.estimatedCost).toBe("0.002");
     expect(plan.estimatedTime).toBe("3200");
-    expect(plan.estimatedPayerAmount).toBe("0.04");
-    expect(plan.steps[1]).toMatchObject({ to: "FLR", preferredAdapter: "SparkDEX" });
+    expect(plan.estimatedPayerAmount).toBe("10");
+    expect(plan.steps[1]).toMatchObject({ to: "WFLR", preferredAdapter: "TestSwapAdapter" });
   });
 
   it("throws when no route exists to the receiver asset", () => {
@@ -174,10 +174,10 @@ describe("ExecutionPlanner", () => {
       registry
     );
 
-    expect(costPlan.steps[1].preferredAdapter).toBe("SparkDEX");
+    expect(costPlan.steps[1].preferredAdapter).toBe("TestSwapAdapter");
     expect(costPlan.steps[1].fallbackAdapters).toEqual(["Kinetic"]);
     expect(speedPlan.steps[1].preferredAdapter).toBe("Kinetic");
-    expect(speedPlan.steps[1].fallbackAdapters).toEqual(["SparkDEX"]);
+    expect(speedPlan.steps[1].fallbackAdapters).toEqual(["TestSwapAdapter"]);
   });
 
   it("computes estimatedPayerAmount across a 2-hop path", () => {
