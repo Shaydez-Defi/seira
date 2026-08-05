@@ -6,7 +6,7 @@ function makeEntry(overrides: Partial<CapabilityEntry> = {}): CapabilityEntry {
   return {
     pair: ["FXRP", "USDT0"],
     rate: 1.25,
-    adapter: "SparkDEX",
+    adapter: "TestSwapAdapter",
     action: "ConvertAsset",
     cost: 0.003,
     latencyMs: 2500,
@@ -25,12 +25,12 @@ describe("CapabilityRegistry", () => {
     const result = registry.getCapabilities("FXRP", "USDT0");
 
     expect(result).toHaveLength(1);
-    expect(result[0].adapter).toBe("SparkDEX");
+    expect(result[0].adapter).toBe("TestSwapAdapter");
   });
 
   it("returns all entries for an existing pair", () => {
     const registry = new CapabilityRegistry();
-    registry.register(makeEntry({ adapter: "SparkDEX" }));
+    registry.register(makeEntry({ adapter: "TestSwapAdapter" }));
     registry.register(makeEntry({ adapter: "Kinetic" }));
 
     const result = registry.getCapabilities("FXRP", "USDT0");
@@ -38,7 +38,7 @@ describe("CapabilityRegistry", () => {
     expect(result).toHaveLength(2);
     expect(result.map((entry) => entry.adapter).sort()).toEqual([
       "Kinetic",
-      "SparkDEX",
+      "TestSwapAdapter",
     ]);
   });
 
@@ -55,7 +55,7 @@ describe("CapabilityRegistry", () => {
     const registry = new CapabilityRegistry();
     registry.register(makeEntry());
 
-    registry.updateObserved(["FXRP", "USDT0"], "SparkDEX", {
+    registry.updateObserved(["FXRP", "USDT0"], "TestSwapAdapter", {
       reliability: 0.99,
       latencyMs: 1800,
       liquidityScore: 0.9,
@@ -72,7 +72,7 @@ describe("CapabilityRegistry", () => {
     const registry = new CapabilityRegistry();
 
     expect(() =>
-      registry.updateObserved(["FXRP", "USDT0"], "SparkDEX", { reliability: 0.99 })
-    ).toThrow(/no capability registered for FXRP -> USDT0 via SparkDEX/);
+      registry.updateObserved(["FXRP", "USDT0"], "TestSwapAdapter", { reliability: 0.99 })
+    ).toThrow(/no capability registered for FXRP -> USDT0 via TestSwapAdapter/);
   });
 });

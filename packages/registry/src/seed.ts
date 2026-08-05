@@ -5,7 +5,7 @@ const SEED_ROUTES: CapabilityEntry[] = [
   {
     pair: ["FXRP", "USDT0"],
     rate: 1.25,
-    adapter: "SparkDEX",
+    adapter: "TestSwapAdapter",
     action: "ConvertAsset",
     cost: 0.003,
     latencyMs: 2500,
@@ -14,9 +14,9 @@ const SEED_ROUTES: CapabilityEntry[] = [
     liquidityScore: 0.85,
   },
   {
-    pair: ["FXRP", "FLR"],
-    rate: 2500,
-    adapter: "SparkDEX",
+    pair: ["FXRP", "WFLR"],
+    rate: 10,
+    adapter: "TestSwapAdapter",
     action: "ConvertAsset",
     cost: 0.002,
     latencyMs: 3200,
@@ -27,7 +27,7 @@ const SEED_ROUTES: CapabilityEntry[] = [
 ];
 
 /**
- * Registers the two seeded SparkDEX routes into the given registry.
+ * Registers the two seeded TestSwapAdapter routes into the given registry.
  */
 export function seedRegistry(registry: CapabilityRegistry): void {
   for (const entry of SEED_ROUTES) {
