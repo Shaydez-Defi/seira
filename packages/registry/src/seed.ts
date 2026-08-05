@@ -24,13 +24,39 @@ const SEED_ROUTES: CapabilityEntry[] = [
     reversible: true,
     liquidityScore: 0.78,
   },
+  {
+    pair: ["USDT0", "FXRP"],
+    rate: 0.4,
+    adapter: "TestSwapAdapter",
+    action: "ConvertAsset",
+    cost: 0.003,
+    latencyMs: 2500,
+    reliability: 0.97,
+    reversible: true,
+    liquidityScore: 0.85,
+  },
+  {
+    pair: ["WFLR", "FXRP"],
+    rate: 0.1,
+    adapter: "TestSwapAdapter",
+    action: "ConvertAsset",
+    cost: 0.002,
+    latencyMs: 3200,
+    reliability: 0.96,
+    reversible: true,
+    liquidityScore: 0.78,
+  },
 ];
 
 /**
- * Registers the two seeded TestSwapAdapter routes into the given registry.
+ * Registers the four seeded TestSwapAdapter routes (both directions of each pair)
+ * into the given registry.
  */
 export function seedRegistry(registry: CapabilityRegistry): void {
   for (const entry of SEED_ROUTES) {
-    registry.register(entry);
+    registry.register({
+      ...entry,
+      pair: [...entry.pair] as [string, string],
+    });
   }
 }

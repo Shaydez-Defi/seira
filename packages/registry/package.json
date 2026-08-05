@@ -5,5 +5,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "test": "vitest run"
+  },
+  "dependencies": {
+    "ethers": "^6.17.0"
   }
 }

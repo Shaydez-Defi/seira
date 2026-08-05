@@ -36,12 +36,14 @@ export class CapabilityRegistry {
   }
 
   /**
-   * Merges observed metrics into the entry matching the pair and adapter.
+   * Merges observed metrics or rate into the entry matching the pair and adapter.
    */
   updateObserved(
     pair: [string, string],
     adapter: string,
-    updates: Partial<Pick<CapabilityEntry, "reliability" | "latencyMs" | "liquidityScore">>
+    updates: Partial<
+      Pick<CapabilityEntry, "rate" | "reliability" | "latencyMs" | "liquidityScore">
+    >
   ): void {
     const entry = this.entries.find(
       (candidate) =>
@@ -53,6 +55,9 @@ export class CapabilityRegistry {
       throw new Error(
         `updateObserved failed: no capability registered for ${pair[0]} -> ${pair[1]} via ${adapter}`
       );
+    }
+    if (updates.rate !== undefined) {
+      entry.rate = updates.rate;
     }
     if (updates.reliability !== undefined) {
       entry.reliability = updates.reliability;
