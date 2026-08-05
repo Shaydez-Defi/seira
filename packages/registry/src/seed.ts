@@ -4,7 +4,7 @@ import { CapabilityRegistry } from "./registry";
 const SEED_ROUTES: CapabilityEntry[] = [
   {
     pair: ["FXRP", "USDT0"],
-    rate: 1.25,
+    rate: 2.5,
     adapter: "TestSwapAdapter",
     action: "ConvertAsset",
     cost: 0.003,

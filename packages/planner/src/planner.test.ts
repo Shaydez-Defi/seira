@@ -19,7 +19,7 @@ function makeIntent(overrides: Partial<PaymentIntent> = {}): PaymentIntent {
 function makeCapability(overrides: Partial<CapabilityEntry> = {}): CapabilityEntry {
   return {
     pair: ["FXRP", "USDT0"],
-    rate: 1.25,
+    rate: 2.5,
     adapter: "TestSwapAdapter",
     action: "ConvertAsset",
     cost: 0.003,
@@ -46,7 +46,7 @@ describe("ExecutionPlanner", () => {
     expect(plan.estimatedCost).toBe("0.003");
     expect(plan.estimatedTime).toBe("2500");
     expect(plan.estimatedOutput).toBe("100");
-    expect(plan.estimatedPayerAmount).toBe("80");
+    expect(plan.estimatedPayerAmount).toBe("40");
     expect(plan.steps).toHaveLength(4);
     expect(plan.steps[0]).toMatchObject({ stepId: 1, action: "AcquireAsset", asset: "FXRP" });
     expect(plan.steps[1]).toMatchObject({
@@ -75,6 +75,15 @@ describe("ExecutionPlanner", () => {
     expect(plan.estimatedTime).toBe("3200");
     expect(plan.estimatedPayerAmount).toBe("10");
     expect(plan.steps[1]).toMatchObject({ to: "WFLR", preferredAdapter: "TestSwapAdapter" });
+  });
+
+  it("estimates the exact payer amount for the seeded FXRP -> USDT0 rate", () => {
+    const planner = new ExecutionPlanner();
+
+    const plan = planner.plan(makeIntent({ receiverAmount: "5" }), makeSeededRegistry());
+
+    expect(plan.estimatedPayerAmount).toBe("2");
+    expect(plan.estimatedOutput).toBe("5");
   });
 
   it("throws when no route exists to the receiver asset", () => {

@@ -95,7 +95,7 @@ describe("POST /api/plan", () => {
     const res = await request(app).post("/api/plan").send(makeIntent());
 
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ estimatedOutput: "100", estimatedPayerAmount: "80" });
+    expect(res.body).toMatchObject({ estimatedOutput: "100", estimatedPayerAmount: "40" });
     expect(res.body.steps).toHaveLength(4);
     expect(res.body.steps[0]).toMatchObject({ stepId: 1, action: "AcquireAsset", asset: "FXRP" });
     expect(res.body.steps[1]).toMatchObject({

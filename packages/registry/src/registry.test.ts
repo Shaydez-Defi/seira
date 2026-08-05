@@ -5,7 +5,7 @@ import { CapabilityRegistry } from "./registry";
 function makeEntry(overrides: Partial<CapabilityEntry> = {}): CapabilityEntry {
   return {
     pair: ["FXRP", "USDT0"],
-    rate: 1.25,
+    rate: 2.5,
     adapter: "TestSwapAdapter",
     action: "ConvertAsset",
     cost: 0.003,
