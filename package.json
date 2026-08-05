@@ -8,6 +8,7 @@
     "packages/planner",
     "packages/runtime",
     "packages/registry",
+    "packages/api",
     "packages/contracts"
   ],
   "scripts": {
