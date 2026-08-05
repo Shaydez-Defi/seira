@@ -50,9 +50,18 @@ const COSTON2_NETWORK = {
   blockExplorerUrls: ["https://coston2-explorer.flare.network"],
 };
 
-/* Seira API base URL; override per environment via VITE_API_URL
-   (e.g. a Codespaces forwarded-port URL) and default to the local dev API. */
-const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
+/* Seira API base URL. In a Codespace the frontend is served from
+   https://<name>-5173.app.github.dev and the API (port 3000) from the same
+   prefix at https://<name>-3000.app.github.dev, so re-derive it from the
+   current hostname; otherwise honor VITE_API_URL or default to localhost. */
+function resolveApiBaseUrl() {
+  const explicit = import.meta.env.VITE_API_URL;
+  if (explicit) return explicit;
+  const host = window.location.hostname;
+  const codespace = host.match(/^(.+)-(\d+)\.app\.github\.dev$/);
+  if (codespace) return `https://${codespace[1]}-3000.app.github.dev`;
+  return "http://localhost:3000";
+}
 
 /** Formats a raw 18-decimal balance with thousands separators for display. */
 function formatTokenAmount(raw) {
@@ -1269,7 +1278,7 @@ function CreateScreen({ payment, setPayment, onBack, onContinue }) {
           toAsset: buyerAsset,
           amount: String(amt),
         });
-        const res = await fetch(`${API_BASE_URL}/api/quote?${query}`);
+        const res = await fetch(`${resolveApiBaseUrl()}/api/quote?${query}`);
         if (cancelled) return;
         if (!res.ok) {
           let message = `No route available for ${receiveAsset} to ${buyerAsset}.`;
