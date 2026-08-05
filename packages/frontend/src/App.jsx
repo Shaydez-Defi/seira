@@ -45,8 +45,9 @@ const ERC20_BALANCE_ABI = ["function balanceOf(address) view returns (uint256)"]
 const COSTON2_NETWORK = {
   chainId: COSTON2_CHAIN_ID_HEX,
   chainName: "Coston2",
-  nativeCurrency: { name: "Flare", symbol: "FLR", decimals: 18 },
+  nativeCurrency: { name: "C2FLR", symbol: "C2FLR", decimals: 18 },
   rpcUrls: [COSTON2_RPC],
+  blockExplorerUrls: ["https://coston2-explorer.flare.network"],
 };
 
 /** Formats a raw 18-decimal balance with thousands separators for display. */
@@ -59,6 +60,14 @@ function formatTokenAmount(raw) {
 /** True when the EIP-1193 error means the user rejected the prompt. */
 function isUserRejected(err) {
   return typeof err === "object" && err !== null && "code" in err && err.code === 4001;
+}
+
+/** True when the switch failed because the chain isn't added to the wallet yet. */
+function isUnrecognizedChain(err) {
+  if (typeof err === "object" && err !== null && "code" in err && err.code === 4902) {
+    return true;
+  }
+  return typeof err?.message === "string" && /unrecognized chain id/i.test(err.message);
 }
 
 function SeiraMark({ size = 28, color = "var(--pink)" }) {
@@ -1023,13 +1032,23 @@ function ConnectScreen({ onConnected }) {
             params: [{ chainId: COSTON2_CHAIN_ID_HEX }],
           });
         } catch (switchErr) {
-          if (switchErr?.code === 4902) {
+          if (!isUnrecognizedChain(switchErr)) {
+            throw switchErr;
+          }
+          try {
             await ethereum.request({
               method: "wallet_addEthereumChain",
               params: [COSTON2_NETWORK],
             });
-          } else {
-            throw switchErr;
+          } catch (addErr) {
+            if (isUserRejected(addErr)) {
+              setNotice(
+                "Adding the Coston2 testnet was declined. Add it manually in your wallet, then connect again."
+              );
+              setPhase("idle");
+              return;
+            }
+            throw addErr;
           }
         }
         const chainAfter = await ethereum.request({ method: "eth_chainId" });
