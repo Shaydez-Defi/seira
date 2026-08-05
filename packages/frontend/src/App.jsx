@@ -71,6 +71,27 @@ function ChevronDown({ size = 13 }) {
   );
 }
 
+/* Full-width wavy divider that marks the boundary between the hero and the
+   first section with a soft pink-tint band capped by a pink wave line. */
+function SectionWave() {
+  return (
+    <div className="section-wave" aria-hidden="true">
+      <svg viewBox="0 0 1440 72" preserveAspectRatio="none">
+        <path
+          d="M0,0 L1440,0 L1440,44 C1260,70 1080,12 900,44 C720,76 540,12 360,44 C180,76 60,12 0,44 Z"
+          fill="var(--pink-tint)"
+        />
+        <path
+          d="M0,44 C60,12 180,76 360,44 C540,12 720,76 900,44 C1080,12 1260,70 1440,44"
+          fill="none"
+          stroke="var(--pink)"
+          strokeWidth="2.5"
+        />
+      </svg>
+    </div>
+  );
+}
+
 /* Scroll reveal — content is opacity:1 always (never gated on the
    observer firing); it only settles into place a little as it enters
    view. Alternating direction + stagger so it isn't one uniform
@@ -640,6 +661,8 @@ function LandingScreen({ onStart }) {
         .section--pink{ background:
             linear-gradient(to bottom, transparent 0, var(--pink-tint) 8%, var(--pink-tint) calc(100% - 8%), transparent 100%),
             var(--paper); }
+        .section-wave{ display:block; width:100%; height:72px; overflow:hidden; pointer-events:none; }
+        .section-wave svg{ display:block; width:100%; height:100%; }
         .section-line{ font-size:clamp(19px, 1.6vw, 24px); line-height:1.5; max-width:32ch; margin:0 0 36px; font-family:var(--font-display); }
         .section-line b{ color:var(--pink-deep); font-weight:400; font-style:italic; }
 
@@ -845,6 +868,8 @@ function LandingScreen({ onStart }) {
         </div>
         <PaymentCard />
       </section>
+
+      <SectionWave />
 
       <section className="section" id="problem" data-navid="problem" ref={setRef("problem")}>
         <Reveal><p className="section-line">Every crypto payment today assumes buyers and merchants use <b>the same asset</b>. Seira removes that assumption.</p></Reveal>
