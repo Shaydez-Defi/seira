@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { BrowserProvider, Contract, JsonRpcProvider, formatUnits } from "ethers";
 /* ────────────────────────────────────────────────────────────
    SEIRA — design tokens
    Palette (capped 3 hues): ink, paper, pink (brand mark).
@@ -33,6 +34,32 @@ const NAV_SECTIONS = [
   { id: "architecture", label: "Architecture" },
   { id: "developers", label: "Developers" },
 ];
+
+/* Coston2 testnet — contract addresses and RPC used for balance reads.
+   The addresses mirror packages/runtime/src/config.ts. */
+const COSTON2_CHAIN_ID_HEX = "0x72";
+const COSTON2_RPC = "https://coston2-api.flare.network/ext/C/rpc";
+const FXRP_ADDRESS = "0x0b6A3645c240605887a5532109323A3E12273dc7";
+const WFLR_ADDRESS = "0xaB6FaD89389B73dBC887d31206A26Fd88d719d1F";
+const ERC20_BALANCE_ABI = ["function balanceOf(address) view returns (uint256)"];
+const COSTON2_NETWORK = {
+  chainId: COSTON2_CHAIN_ID_HEX,
+  chainName: "Coston2",
+  nativeCurrency: { name: "Flare", symbol: "FLR", decimals: 18 },
+  rpcUrls: [COSTON2_RPC],
+};
+
+/** Formats a raw 18-decimal balance with thousands separators for display. */
+function formatTokenAmount(raw) {
+  const value = Number.parseFloat(formatUnits(raw, 18));
+  const fixed = Math.abs(value) >= 1000 ? value.toFixed(1) : value.toFixed(2);
+  return new Intl.NumberFormat("en-US").format(Number(fixed));
+}
+
+/** True when the EIP-1193 error means the user rejected the prompt. */
+function isUserRejected(err) {
+  return typeof err === "object" && err !== null && "code" in err && err.code === 4001;
+}
 
 function SeiraMark({ size = 28, color = "var(--pink)" }) {
   return (
@@ -970,11 +997,82 @@ function LandingScreen({ onStart }) {
 
 function ConnectScreen({ onConnected }) {
   const [phase, setPhase] = useState("idle"); // idle | connecting | connected
+  const [session, setSession] = useState(null); // { address, fxrp, wflr }
+  const [notice, setNotice] = useState(null);
 
-  const connect = useCallback(() => {
+  const connect = useCallback(async () => {
+    const ethereum = window.ethereum;
+    if (!ethereum) {
+      setPhase("idle");
+      setNotice(
+        "No injected wallet found. Install MetaMask or another EIP-1193 wallet (Rabby, Coinbase, etc.) and reload, then connect."
+      );
+      return;
+    }
+
     setPhase("connecting");
-    setTimeout(() => setPhase("connected"), 1300);
+    setNotice(null);
+    try {
+      await ethereum.request({ method: "eth_requestAccounts" });
+
+      const currentChain = await ethereum.request({ method: "eth_chainId" });
+      if (currentChain !== COSTON2_CHAIN_ID_HEX) {
+        try {
+          await ethereum.request({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: COSTON2_CHAIN_ID_HEX }],
+          });
+        } catch (switchErr) {
+          if (switchErr?.code === 4902) {
+            await ethereum.request({
+              method: "wallet_addEthereumChain",
+              params: [COSTON2_NETWORK],
+            });
+          } else {
+            throw switchErr;
+          }
+        }
+        const chainAfter = await ethereum.request({ method: "eth_chainId" });
+        if (chainAfter !== COSTON2_CHAIN_ID_HEX) {
+          setNotice("Approve the switch to the Coston2 testnet to continue.");
+          setPhase("idle");
+          return;
+        }
+      }
+
+      const provider = new BrowserProvider(ethereum);
+      const signer = await provider.getSigner();
+      const address = await signer.getAddress();
+
+      const read = new JsonRpcProvider(COSTON2_RPC);
+      const fxrp = new Contract(FXRP_ADDRESS, ERC20_BALANCE_ABI, read);
+      const wflr = new Contract(WFLR_ADDRESS, ERC20_BALANCE_ABI, read);
+      const [fxrpRaw, wflrRaw] = await Promise.all([
+        fxrp.balanceOf(address),
+        wflr.balanceOf(address),
+      ]);
+
+      setSession({
+        address,
+        fxrp: formatTokenAmount(fxrpRaw),
+        wflr: formatTokenAmount(wflrRaw),
+      });
+      setPhase("connected");
+    } catch (err) {
+      if (isUserRejected(err)) {
+        setNotice(null);
+        setPhase("idle");
+        return;
+      }
+      setNotice(err?.message ?? "Could not connect to your wallet. Please try again.");
+      setPhase("idle");
+    }
   }, []);
+
+  const shortAddress =
+    session && typeof session.address === "string"
+      ? `${session.address.slice(0, 8)}...${session.address.slice(-5)}`
+      : "";
 
   return (
     <div className="app-shell">
@@ -1031,6 +1129,7 @@ function ConnectScreen({ onConnected }) {
         .connect-btn:active{ transform:scale(.98); }
         .connect-btn:disabled{ cursor:default; opacity:.85; }
         .connect-network-note{ font-size:12px; color:var(--ink-faint); margin-top:14px; }
+        .connect-notice{ font-size:13px; color:var(--pink-deep); margin-top:14px; line-height:1.5; }
         .spin{ animation:spin .8s linear infinite; }
         @keyframes spin{ to{ transform:rotate(360deg); } }
 
@@ -1077,7 +1176,7 @@ function ConnectScreen({ onConnected }) {
       <div className="main-col">
         <div className="main-top">
           <div className="main-top-left"><SeiraMark size={22} /><span className="brand">Seira</span></div>
-          {phase === "connected" && <span className="main-top-meta">rEb1...9kQ2 · Coston2</span>}
+          {phase === "connected" && <span className="main-top-meta">{shortAddress} · Coston2</span>}
         </div>
 
         <div className="main-stage">
@@ -1092,6 +1191,7 @@ function ConnectScreen({ onConnected }) {
                 <button className="connect-btn" onClick={connect} disabled={phase === "connecting"}>
                   {phase === "connecting" ? <><Spinner /> Connecting</> : <><WalletGlyph /> Connect Wallet</>}
                 </button>
+                {notice && <p className="connect-notice" role="alert">{notice}</p>}
                 <p className="connect-network-note">Connects on Coston2 testnet.</p>
               </>
             ) : (
@@ -1101,8 +1201,8 @@ function ConnectScreen({ onConnected }) {
                   <div className="balance-card">
                     <div className="balance-sheen" />
                     <div className="balance-k">Balance</div>
-                    <div className="balance-v">312.48<span>FXRP</span></div>
-                    <div className="balance-secondary">4,120.0 <b>FLR</b></div>
+                    <div className="balance-v">{session.fxrp}<span>FXRP</span></div>
+                    <div className="balance-secondary">{session.wflr} <b>FLR</b></div>
                     <div className="balance-hair" />
                     <div className="balance-verified"><RouteVerified /> Wallet connected, ready to send</div>
                   </div>
