@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { startServer } from "./server";
 
 const DEFAULT_PORT = 3000;
