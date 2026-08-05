@@ -80,12 +80,14 @@ function SectionWave() {
         <path
           d="M0,0 L1440,0 L1440,44 C1260,70 1080,12 900,44 C720,76 540,12 360,44 C180,76 60,12 0,44 Z"
           fill="var(--pink-tint)"
+          fillOpacity="0.5"
         />
         <path
           d="M0,44 C60,12 180,76 360,44 C540,12 720,76 900,44 C1080,12 1260,70 1440,44"
           fill="none"
           stroke="var(--pink)"
-          strokeWidth="2.5"
+          strokeOpacity="0.65"
+          strokeWidth="1.75"
         />
       </svg>
     </div>
@@ -661,7 +663,7 @@ function LandingScreen({ onStart }) {
         .section--pink{ background:
             linear-gradient(to bottom, transparent 0, var(--pink-tint) 8%, var(--pink-tint) calc(100% - 8%), transparent 100%),
             var(--paper); }
-        .section-wave{ display:block; width:100%; height:72px; overflow:hidden; pointer-events:none; }
+        .section-wave{ display:block; width:100%; height:56px; overflow:hidden; pointer-events:none; }
         .section-wave svg{ display:block; width:100%; height:100%; }
         .section-line{ font-size:clamp(19px, 1.6vw, 24px); line-height:1.5; max-width:32ch; margin:0 0 36px; font-family:var(--font-display); }
         .section-line b{ color:var(--pink-deep); font-weight:400; font-style:italic; }
@@ -878,6 +880,8 @@ function LandingScreen({ onStart }) {
           <Reveal dir="right" stagger={1}><CleanChain /></Reveal>
         </div>
       </section>
+
+      <SectionWave />
 
       <section className="section" id="how" data-navid="how" ref={setRef("how")}>
         <Reveal><p className="section-line">How Seira <b>actually works</b>. Three steps, no jargon.</p></Reveal>
