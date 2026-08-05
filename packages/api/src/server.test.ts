@@ -80,6 +80,14 @@ describe("GET /api/health", () => {
     expect(res.headers["access-control-allow-origin"]).toBe("http://localhost:5173");
   });
 
+  it("allows GitHub Codespaces forwarded-port origins via CORS", async () => {
+    const { app } = makeTestApp();
+    const res = await request(app)
+      .get("/api/health")
+      .set("Origin", "https://shaydez-dev--5173.app.github.dev");
+    expect(res.headers["access-control-allow-origin"]).toBe("https://shaydez-dev--5173.app.github.dev");
+  });
+
   it("does not set CORS headers for non-localhost origins", async () => {
     const { app } = makeTestApp();
     const res = await request(app)

@@ -29,8 +29,16 @@ const STEP_ACTIONS = [
 
 const PRIORITIES = ["cost", "speed", "safety"] as const;
 
-/** Origins allowed by CORS, restricted to local frontend dev servers. */
-const LOCALHOST_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+/** Matches a forwarded-port origin, e.g. https://<name>--5173.app.github.dev. */
+const GITHUB_APP_SUBDOMAIN_ORIGIN = /^https:\/\/[a-z0-9-]+\.app\.github\.dev$/;
+
+/** Origins allowed by CORS: local frontend dev servers and GitHub Codespaces forwarded ports. */
+function isAllowedOrigin(origin: string): boolean {
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+    return true;
+  }
+  return GITHUB_APP_SUBDOMAIN_ORIGIN.test(origin);
+}
 
 export interface Logger {
   info(message: string): void;
@@ -79,7 +87,7 @@ export class ApiError extends Error {
  */
 export function createApp(deps: ApiDependencies): Express {
   const app = express();
-  app.use(cors({ origin: LOCALHOST_ORIGIN }));
+  app.use(cors({ origin: (origin, callback) => callback(null, isAllowedOrigin(origin ?? "")) }));
   app.use(express.json());
 
   app.get("/api/health", (_req, res) => {
