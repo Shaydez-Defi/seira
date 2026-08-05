@@ -187,7 +187,8 @@ export function startServer(port: number): void {
     consoleLogger.info(`seira api listening on http://localhost:${port}`);
   });
   server.on("error", (error) => {
-    consoleLogger.error(`server failed to start: ${toMessage(error)}`);
+    consoleLogger.error(`server failed to start on port ${port}: ${toMessage(error)}`);
+    process.exitCode = 1;
   });
 }
 
