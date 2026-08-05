@@ -628,6 +628,17 @@ function LandingScreen({ onStart }) {
 
         /* SECTION SHELL */
         .section{ padding:64px 48px; max-width:1520px; margin:0 auto; }
+        /* Background rhythm: tinted bands that fade back to paper at their top
+           and bottom edges over a few dozen pixels, so sections blend into
+           their neighbors instead of hard-cutting. Tokens only (no new hues). */
+        .section--dim{ background: linear-gradient(to bottom,
+            var(--paper) 0%,
+            var(--paper-dim) 44px,
+            var(--paper-dim) calc(100% - 44px),
+            var(--paper) 100%); }
+        .section--pink{ background:
+            linear-gradient(180deg, transparent 12%, var(--pink-tint) 55%, transparent 100%),
+            var(--paper); }
         .section-line{ font-size:clamp(19px, 1.6vw, 24px); line-height:1.5; max-width:32ch; margin:0 0 36px; font-family:var(--font-display); }
         .section-line b{ color:var(--pink-deep); font-weight:400; font-style:italic; }
 
@@ -834,7 +845,7 @@ function LandingScreen({ onStart }) {
         <PaymentCard />
       </section>
 
-      <section className="section" id="problem" data-navid="problem" ref={setRef("problem")}>
+      <section className="section section--dim" id="problem" data-navid="problem" ref={setRef("problem")}>
         <Reveal><p className="section-line">Every crypto payment today assumes buyers and merchants use <b>the same asset</b>. Seira removes that assumption.</p></Reveal>
         <div className="problem-grid">
           <Reveal dir="left"><MessyChain /></Reveal>
@@ -858,7 +869,7 @@ function LandingScreen({ onStart }) {
         </div>
       </section>
 
-      <section className="section" id="matters" data-navid="matters" ref={setRef("matters")}>
+      <section className="section section--dim" id="matters" data-navid="matters" ref={setRef("matters")}>
         <Reveal><p className="section-line">Why it <b>matters</b>, from every side of the payment.</p></Reveal>
         <div className="matters-grid">
           {MATTERS.map((m, i) => (
@@ -870,7 +881,7 @@ function LandingScreen({ onStart }) {
         </div>
       </section>
 
-      <section className="section" id="demo" data-navid="demo" ref={setRef("demo")}>
+      <section className="section section--pink" id="demo" data-navid="demo" ref={setRef("demo")}>
         <Reveal><p className="section-line">Try it. A <b>live</b> route, mocked for the demo.</p></Reveal>
         <Reveal stagger={1}><LiveDemo /></Reveal>
       </section>
@@ -893,7 +904,7 @@ function LandingScreen({ onStart }) {
         </div>
       </section>
 
-      <section className="section" id="roadmap" data-navid="roadmap" ref={setRef("roadmap")} style={{ paddingBottom: "32px" }}>
+      <section className="section section--dim" id="roadmap" data-navid="roadmap" ref={setRef("roadmap")} style={{ paddingBottom: "32px" }}>
         <Reveal><p className="section-line">Where this is <b>headed</b>.</p></Reveal>
         <div className="roadmap-row">
           {ROADMAP.map((r, i) => (
