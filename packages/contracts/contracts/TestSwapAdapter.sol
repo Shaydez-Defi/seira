@@ -30,11 +30,16 @@ contract TestSwapAdapter {
         _;
     }
 
-    function swap(address tokenIn, address tokenOut, uint256 amountIn) external {
-        uint256 rate = rates[tokenIn][tokenOut];
-        require(rate != 0, "rate not set");
+    function quote(address tokenIn, address tokenOut, uint256 amountIn)
+        external
+        view
+        returns (uint256 amountOut)
+    {
+        return _calculateAmountOut(tokenIn, tokenOut, amountIn);
+    }
 
-        uint256 amountOut = (amountIn * rate) / 1e18;
+    function swap(address tokenIn, address tokenOut, uint256 amountIn) external {
+        uint256 amountOut = _calculateAmountOut(tokenIn, tokenOut, amountIn);
         require(amountOut > 0, "zero output amount");
 
         uint256 available = liquidity[tokenOut];
@@ -49,6 +54,16 @@ contract TestSwapAdapter {
         require(IERC20(tokenOut).transfer(msg.sender, amountOut), "transfer failed");
 
         emit Swap(tokenIn, tokenOut, amountIn, amountOut, msg.sender);
+    }
+
+    function _calculateAmountOut(address tokenIn, address tokenOut, uint256 amountIn)
+        private
+        view
+        returns (uint256)
+    {
+        uint256 rate = rates[tokenIn][tokenOut];
+        require(rate != 0, "rate not set");
+        return (amountIn * rate) / 1e18;
     }
 
     function setRate(address tokenIn, address tokenOut, uint256 rate) external onlyOwner {

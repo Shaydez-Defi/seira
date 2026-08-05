@@ -6,19 +6,21 @@ import type { TypedContractEvent, TypedDeferredTopicFilter, TypedEventLog, Typed
   
 
   export interface TestSwapAdapterInterface extends Interface {
-    getFunction(nameOrSignature: "fundLiquidity" | "liquidity" | "owner" | "setRate" | "swap"): FunctionFragment;
+    getFunction(nameOrSignature: "fundLiquidity" | "liquidity" | "owner" | "quote" | "setRate" | "swap"): FunctionFragment;
 
     getEvent(nameOrSignatureOrTopic: "Swap"): EventFragment;
 
     encodeFunctionData(functionFragment: 'fundLiquidity', values: [AddressLike, BigNumberish]): string;
 encodeFunctionData(functionFragment: 'liquidity', values: [AddressLike]): string;
 encodeFunctionData(functionFragment: 'owner', values?: undefined): string;
+encodeFunctionData(functionFragment: 'quote', values: [AddressLike, AddressLike, BigNumberish]): string;
 encodeFunctionData(functionFragment: 'setRate', values: [AddressLike, AddressLike, BigNumberish]): string;
 encodeFunctionData(functionFragment: 'swap', values: [AddressLike, AddressLike, BigNumberish]): string;
 
     decodeFunctionResult(functionFragment: 'fundLiquidity', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'liquidity', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'owner', data: BytesLike): Result;
+decodeFunctionResult(functionFragment: 'quote', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'setRate', data: BytesLike): Result;
 decodeFunctionResult(functionFragment: 'swap', data: BytesLike): Result;
   }
@@ -94,6 +96,14 @@ decodeFunctionResult(functionFragment: 'swap', data: BytesLike): Result;
     
 
     
+    quote: TypedContractMethod<
+      [tokenIn: AddressLike, tokenOut: AddressLike, amountIn: BigNumberish, ],
+      [bigint],
+      'view'
+    >
+    
+
+    
     setRate: TypedContractMethod<
       [tokenIn: AddressLike, tokenOut: AddressLike, rate: BigNumberish, ],
       [void],
@@ -125,6 +135,11 @@ getFunction(nameOrSignature: 'liquidity'): TypedContractMethod<
 getFunction(nameOrSignature: 'owner'): TypedContractMethod<
       [],
       [string],
+      'view'
+    >;
+getFunction(nameOrSignature: 'quote'): TypedContractMethod<
+      [tokenIn: AddressLike, tokenOut: AddressLike, amountIn: BigNumberish, ],
+      [bigint],
       'view'
     >;
 getFunction(nameOrSignature: 'setRate'): TypedContractMethod<

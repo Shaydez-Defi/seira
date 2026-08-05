@@ -64,6 +64,27 @@ describe("TestSwapAdapter", function () {
     ).to.be.revertedWith("rate not set");
   });
 
+  it("quote returns the expected amount for a configured rate", async function () {
+    const { adapter, tokenInAddress, tokenOutAddress } =
+      await networkHelpers.loadFixture(deployAdapterFixture);
+
+    await adapter.setRate(tokenInAddress, tokenOutAddress, ethers.parseEther("2"));
+
+    const amountIn = ethers.parseEther("10");
+    expect(await adapter.quote(tokenInAddress, tokenOutAddress, amountIn)).to.equal(
+      ethers.parseEther("20")
+    );
+  });
+
+  it("quote reverts when no rate is configured for the pair", async function () {
+    const { adapter, tokenInAddress, tokenOutAddress } =
+      await networkHelpers.loadFixture(deployAdapterFixture);
+
+    await expect(
+      adapter.quote(tokenInAddress, tokenOutAddress, ethers.parseEther("1"))
+    ).to.be.revertedWith("rate not set");
+  });
+
   it("reverts when liquidity is insufficient", async function () {
     const { adapter, user, tokenInAddress, tokenOutAddress } =
       await networkHelpers.loadFixture(deployAdapterFixture);
