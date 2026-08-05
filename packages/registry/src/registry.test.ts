@@ -68,6 +68,18 @@ describe("CapabilityRegistry", () => {
     expect(updated.cost).toBe(0.003);
   });
 
+  it("updateObserved updates the rate without touching other fields", () => {
+    const registry = new CapabilityRegistry();
+    registry.register(makeEntry());
+
+    registry.updateObserved(["FXRP", "USDT0"], "TestSwapAdapter", { rate: 2.75 });
+
+    const [updated] = registry.getCapabilities("FXRP", "USDT0");
+    expect(updated.rate).toBe(2.75);
+    expect(updated.reliability).toBe(0.97);
+    expect(updated.cost).toBe(0.003);
+  });
+
   it("updateObserved throws when no matching entry exists", () => {
     const registry = new CapabilityRegistry();
 
