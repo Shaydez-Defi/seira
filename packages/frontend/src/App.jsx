@@ -881,8 +881,6 @@ function LandingScreen({ onStart }) {
         </div>
       </section>
 
-      <SectionWave />
-
       <section className="section" id="how" data-navid="how" ref={setRef("how")}>
         <Reveal><p className="section-line">How Seira <b>actually works</b>. Three steps, no jargon.</p></Reveal>
         <div className="works-grid">
