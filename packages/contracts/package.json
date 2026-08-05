@@ -8,7 +8,8 @@
     "test": "hardhat test",
     "typecheck": "tsc --noEmit",
     "deploy:coston2": "hardhat run scripts/deploy.ts --network coston2",
-    "setup:demo": "hardhat run scripts/setupDemo.ts --network coston2"
+    "setup:demo": "hardhat run scripts/setupDemo.ts --network coston2",
+    "check:ftso": "hardhat run scripts/checkFtso.ts --network coston2"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-ethers": "^4.0.15",
