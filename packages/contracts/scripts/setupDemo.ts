@@ -19,6 +19,7 @@ const ERC20_ABI = [
 
 const WFLR_ABI = [
   "function deposit() external payable",
+  "function withdraw(uint256 amount) external",
   ...ERC20_ABI,
 ] as const;
 
@@ -30,6 +31,7 @@ interface Erc20Contract {
 
 interface WflrContract extends Erc20Contract {
   deposit(overrides?: { value: bigint }): Promise<TransactionResponse>;
+  withdraw(amount: bigint): Promise<TransactionResponse>;
 }
 
 interface DemoToken {
@@ -55,6 +57,10 @@ const FXRP_TO_WFLR_PRICE: Price = { numerator: 10n, denominator: 1n };
 
 function erc20At(address: string, signer: Signer): Erc20Contract {
   return new Contract(address, ERC20_ABI, signer) as unknown as Erc20Contract;
+}
+
+function wflrAt(address: string, signer: Signer): WflrContract {
+  return new Contract(address, WFLR_ABI, signer) as unknown as WflrContract;
 }
 
 function inverse(price: Price): Price {
@@ -110,7 +116,7 @@ async function main(): Promise<void> {
   console.log(`Backend address: ${backendAddress}`);
 
   const adapter = await ethers.getContractAt("TestSwapAdapter", TEST_SWAP_ADAPTER_ADDRESS, signer);
-  const wflr = erc20At(WFLR_ADDRESS, signer) as unknown as WflrContract;
+  const wflr = wflrAt(WFLR_ADDRESS, signer);
   const tokens: DemoToken[] = [
     { name: "FXRP", address: FXRP_ADDRESS, amount: 3n, contract: erc20At(FXRP_ADDRESS, signer) },
     { name: "USDT0", address: USDT0_ADDRESS, amount: 3n, contract: erc20At(USDT0_ADDRESS, signer) },
