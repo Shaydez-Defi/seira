@@ -635,9 +635,6 @@ function LandingScreen({ onStart }) {
         .section--ink{ background:var(--ink); color:var(--paper); border-radius:22px; margin:28px auto; }
         .section--ink .section-line{ color:var(--paper); }
         .section--ink .section-line b{ color:var(--pink); }
-        .section--ink .chain-text{ color:var(--ink-faint); }
-        .section--ink .chain-node--clean .chain-text{ color:var(--paper); }
-        .section--ink .chain-node.is-bad .chain-text{ color:var(--pink); }
         .section--ink .roadmap-phase{ color:var(--ink-faint); }
         .section--ink .roadmap-item{ color:var(--paper); }
         .section--pink{ background:
@@ -849,7 +846,7 @@ function LandingScreen({ onStart }) {
         <PaymentCard />
       </section>
 
-      <section className="section section--ink" id="problem" data-navid="problem" ref={setRef("problem")}>
+      <section className="section" id="problem" data-navid="problem" ref={setRef("problem")}>
         <Reveal><p className="section-line">Every crypto payment today assumes buyers and merchants use <b>the same asset</b>. Seira removes that assumption.</p></Reveal>
         <div className="problem-grid">
           <Reveal dir="left"><MessyChain /></Reveal>
