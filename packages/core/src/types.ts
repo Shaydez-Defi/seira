@@ -49,3 +49,11 @@ export interface ExecutionPlan {
   estimatedPayerAmount: string;
   steps: ExecutionStep[];
 }
+
+export interface QuoteResponse {
+  fromAsset: string;
+  toAsset: string;
+  amountIn: string;
+  amountOut: string;
+  adapter: string;
+}

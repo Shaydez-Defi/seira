@@ -217,4 +217,46 @@ describe("ExecutionRuntime", function () {
     expect(receipt.steps).to.deep.equal([{ stepId: 1, status: "failed" }]);
     expect(await fxrp.balanceOf(backend.address)).to.equal(ethers.parseEther("1000"));
   });
+
+  it("quotes a pair directly without executing a plan", async function () {
+    const { runtime } = await networkHelpers.loadFixture(deployRuntimeFixture);
+
+    const quote = await runtime.quotePreview(FXRP_SYMBOL, USDT0_SYMBOL, "2", ADAPTER_NAME);
+
+    expect(quote).to.deep.equal({
+      fromAsset: FXRP_SYMBOL,
+      toAsset: USDT0_SYMBOL,
+      amountIn: "2",
+      amountOut: "5.0",
+      adapter: ADAPTER_NAME,
+    });
+  });
+
+  it("quotePreview throws when the pair has no configured rate", async function () {
+    const { runtime } = await networkHelpers.loadFixture(deployRuntimeFixture);
+
+    await expectRejectedWith(
+      runtime.quotePreview(USDT0_SYMBOL, WFLR_SYMBOL, "1", ADAPTER_NAME),
+      /rate not set/
+    );
+  });
+
+  it("quotePreview throws for an unknown asset symbol", async function () {
+    const { runtime } = await networkHelpers.loadFixture(deployRuntimeFixture);
+
+    await expectRejectedWith(
+      runtime.quotePreview("ETH", USDT0_SYMBOL, "1", ADAPTER_NAME),
+      /Unknown asset symbol "ETH"/
+    );
+  });
 });
+
+async function expectRejectedWith(promise: Promise<unknown>, pattern: RegExp): Promise<void> {
+  let message = "no rejection";
+  try {
+    await promise;
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error);
+  }
+  expect(message).to.match(pattern);
+}

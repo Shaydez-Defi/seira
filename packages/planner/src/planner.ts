@@ -35,6 +35,9 @@ export const DEFAULT_WEIGHTS: ScoreWeights = {
   liquidityScore: 0.2,
 };
 
+/** Thrown when no feasible route exists between the intent's payer and receiver assets. */
+export class NoFeasibleRouteError extends Error {}
+
 interface PathMetrics {
   cost: number;
   latencyMs: number;
@@ -263,7 +266,7 @@ export class ExecutionPlanner {
     }
 
     if (feasible.length === 0) {
-      throw new Error(
+      throw new NoFeasibleRouteError(
         `No feasible route from ${intent.payerAsset} to ${intent.receiverAsset}`
       );
     }

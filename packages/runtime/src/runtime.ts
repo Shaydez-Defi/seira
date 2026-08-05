@@ -1,5 +1,6 @@
 import {
   Contract,
+  isError,
   JsonRpcProvider,
   MaxUint256,
   Wallet,
@@ -13,7 +14,11 @@ import type {
   Signer,
   TransactionReceipt,
 } from "ethers";
-import type { ExecutionPlan, ExecutionStep } from "../../core/src/types";
+import type {
+  ExecutionPlan,
+  ExecutionStep,
+  QuoteResponse,
+} from "../../core/src/types";
 import { ADAPTERS, COSTON2_CHAIN_ID, TOKENS } from "./config";
 
 const ERC20_ABI = [
@@ -32,6 +37,13 @@ const SWAP_ADAPTER_ABI = [
 
 /** Scale factor used to express a slippage fraction as whole parts per million. */
 const SLIPPAGE_PPM_SCALE = 1_000_000n;
+
+/**
+ * Thrown for expected business failures (insufficient balance, zero quote,
+ * settlement mismatch) that should surface as a "failed" execution receipt
+ * rather than a server error.
+ */
+export class ExecutionBusinessError extends Error {}
 
 interface Erc20Contract {
   decimals(): Promise<bigint>;
@@ -164,7 +176,7 @@ export class ExecutionRuntime {
             (expectedMin * this.slippagePpm(step)) / SLIPPAGE_PPM_SCALE;
           const delta = (await receiverToken.balanceOf(recipient)) - recipientBefore;
           if (delta < expectedMin - tolerance) {
-            throw new Error(
+            throw new ExecutionBusinessError(
               `VerifySettlement step ${step.stepId} failed: recipient balance increased ` +
                 `by ${formatUnits(delta, await this.decimals(receiverAsset))} ${receiverAsset}, ` +
                 `expected at least ${formatUnits(expectedMin, await this.decimals(receiverAsset))}`
@@ -179,6 +191,36 @@ export class ExecutionRuntime {
     }
   }
 
+  /**
+   * Previews the output of converting an amount through the given adapter without
+   * running a plan, used by the API for live quote polling.
+   */
+  async quotePreview(
+    fromAsset: string,
+    toAsset: string,
+    amountIn: string,
+    adapterName: string
+  ): Promise<QuoteResponse> {
+    const fromAddress = this.resolveToken(fromAsset);
+    const toAddress = this.resolveToken(toAsset);
+    const adapterAddress = this.resolveAdapter(adapterName);
+
+    const amountInRaw = parseUnits(amountIn, await this.decimals(fromAsset));
+    const amountOutRaw = await this.swapAdapterAt(adapterAddress).quote(
+      fromAddress,
+      toAddress,
+      amountInRaw
+    );
+
+    return {
+      fromAsset,
+      toAsset,
+      amountIn,
+      amountOut: formatUnits(amountOutRaw, await this.decimals(toAsset)),
+      adapter: adapterName,
+    };
+  }
+
   private async assertSufficientBalance(
     step: ExecutionStep,
     plan: ExecutionPlan,
@@ -189,7 +231,7 @@ export class ExecutionRuntime {
       await this.getSignerAddress()
     );
     if (balance < needed) {
-      throw new Error(
+      throw new ExecutionBusinessError(
         `AcquireAsset step ${step.stepId} failed: insufficient balance of ${payerAsset} ` +
           `(need ${formatUnits(needed, await this.decimals(payerAsset))}, ` +
           `have ${formatUnits(balance, await this.decimals(payerAsset))})`
@@ -218,7 +260,7 @@ export class ExecutionRuntime {
 
     const quoted = await adapter.quote(fromAddress, toAddress, amountIn);
     if (quoted === 0n) {
-      throw new Error(
+      throw new ExecutionBusinessError(
         `ConvertAsset step ${step.stepId} failed: quote returned zero output ` +
           `for ${fromSymbol} -> ${toSymbol} via ${adapterName}`
       );
@@ -255,28 +297,27 @@ export class ExecutionRuntime {
     const reversible = completedConverts.filter(
       (completed) => completed.step.properties?.reversible === true
     );
-    if (reversible.length === 0) {
-      return { planId: plan.planId, status: "failed", steps: stepReceipts, error: message };
+    if (reversible.length > 0) {
+      try {
+        await this.rollback(reversible);
+        return {
+          planId: plan.planId,
+          status: "rolled_back",
+          steps: stepReceipts,
+          error: message,
+        };
+      } catch (rollbackError) {
+        const rollbackMessage =
+          rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+        throw new Error(`${message}; rollback failed: ${rollbackMessage}`, {
+          cause: error,
+        });
+      }
     }
-
-    try {
-      await this.rollback(reversible);
-      return {
-        planId: plan.planId,
-        status: "rolled_back",
-        steps: stepReceipts,
-        error: message,
-      };
-    } catch (rollbackError) {
-      const rollbackMessage =
-        rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
-      return {
-        planId: plan.planId,
-        status: "failed",
-        steps: stepReceipts,
-        error: `${message}; rollback failed: ${rollbackMessage}`,
-      };
+    if (!isBusinessError(error)) {
+      throw error;
     }
+    return { planId: plan.planId, status: "failed", steps: stepReceipts, error: message };
   }
 
   private async rollback(completed: CompletedConvert[]): Promise<void> {
@@ -395,6 +436,13 @@ export class ExecutionRuntime {
   private swapAdapterAt(address: string): SwapAdapterContract {
     return new Contract(address, SWAP_ADAPTER_ABI, this.signer) as unknown as SwapAdapterContract;
   }
+}
+
+function isBusinessError(error: unknown): boolean {
+  return (
+    error instanceof ExecutionBusinessError ||
+    (error instanceof Error && isError(error, "CALL_EXCEPTION"))
+  );
 }
 
 /**
