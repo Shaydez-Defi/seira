@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { BrowserProvider, Contract, JsonRpcProvider, formatUnits } from "ethers";
 /* ────────────────────────────────────────────────────────────
    SEIRA — design tokens
@@ -49,6 +49,10 @@ const COSTON2_NETWORK = {
   rpcUrls: [COSTON2_RPC],
   blockExplorerUrls: ["https://coston2-explorer.flare.network"],
 };
+
+/* Seira API base URL; override per environment via VITE_API_URL
+   (e.g. a Codespaces forwarded-port URL) and default to the local dev API. */
+const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
 
 /** Formats a raw 18-decimal balance with thousands separators for display. */
 function formatTokenAmount(raw) {
@@ -524,8 +528,6 @@ function SelectPay({ value, options, onChange, align = "right" }) {
     </div>
   );
 }
-
-const RATE = { FXRP: 2.189, FLR: 77.6 };
 function ClockGlyph({ size = 16 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -1243,13 +1245,66 @@ function CreateScreen({ payment, setPayment, onBack, onContinue }) {
   const setReceiveAsset = (v) => setPayment((p) => ({ ...p, receiveAsset: v }));
   const setBuyerAsset = (v) => setPayment((p) => ({ ...p, buyerAsset: v }));
 
-  const converted = useMemo(() => {
-    const n = parseFloat(amount);
-    if (!n || isNaN(n)) return "0.00";
-    return (n * RATE[buyerAsset]).toFixed(2);
-  }, [amount, buyerAsset]);
+  const [youPay, setYouPay] = useState(null);
+  const [quoteLoading, setQuoteLoading] = useState(false);
+  const [quoteError, setQuoteError] = useState(null);
 
-  const canContinue = recipient.trim().length > 0 && parseFloat(amount) > 0;
+  /* Reverse live quote: ask the API how much of the buyerAsset is needed to
+     cover the typed "They receive" amount. Debounced ~400ms on any change. */
+  useEffect(() => {
+    const amt = Number.parseFloat(amount);
+    if (!amt || amt <= 0) {
+      setYouPay(null);
+      setQuoteError(null);
+      setQuoteLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setQuoteLoading(true);
+    setQuoteError(null);
+    const timer = setTimeout(async () => {
+      try {
+        const query = new URLSearchParams({
+          fromAsset: receiveAsset,
+          toAsset: buyerAsset,
+          amount: String(amt),
+        });
+        const res = await fetch(`${API_BASE_URL}/api/quote?${query}`);
+        if (cancelled) return;
+        if (!res.ok) {
+          let message = `No route available for ${receiveAsset} to ${buyerAsset}.`;
+          try {
+            const body = await res.json();
+            if (body && typeof body.error === "string" && body.error) {
+              message = body.error;
+            }
+          } catch {
+            /* fall back to the default message if the body is not JSON */
+          }
+          if (!cancelled) {
+            setQuoteError(message);
+            setYouPay(null);
+          }
+          return;
+        }
+        const data = await res.json();
+        if (cancelled) return;
+        setYouPay(data.amountOut ?? null);
+      } catch (err) {
+        if (cancelled) return;
+        setQuoteError(err?.message ?? "Unable to fetch a quote. Please try again.");
+        setYouPay(null);
+      } finally {
+        if (!cancelled) setQuoteLoading(false);
+      }
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [amount, receiveAsset, buyerAsset]);
+
+  const canContinue = recipient.trim().length > 0 && youPay !== null && !quoteLoading && !quoteError;
 
   return (
     <div className="app-shell">
@@ -1319,8 +1374,13 @@ function CreateScreen({ payment, setPayment, onBack, onContinue }) {
           background:none; border:none; width:100%; padding:0; text-align:left; }
         .cr-amount-input:focus{ outline:none; }
         .cr-amount-input::placeholder{ color:var(--ink-faint); }
-        .cr-preview{ font-family:var(--font-display); font-size:clamp(22px, 1.7vw, 26px); }
-        .cr-preview span{ font-family:var(--font-mono); font-size:12px; color:var(--ink-soft); margin-left:6px; }
+        .cr-preview{ font-family:var(--font-display); font-size:clamp(22px, 1.7vw, 26px);
+          display:flex; align-items:baseline; gap:8px; min-height:clamp(30px, 2vw, 34px); }
+        .cr-preview span{ font-family:var(--font-mono); font-size:12px; color:var(--ink-soft); }
+        .cr-preview-loading{ display:inline-flex; align-items:center; color:var(--ink-faint); }
+        .cr-preview-loading .spin{ animation:cr-spin .8s linear infinite; }
+        .cr-preview-error{ font-size:12.5px; color:var(--pink-deep); margin-top:8px; line-height:1.45; }
+        @keyframes cr-spin{ to{ transform:rotate(360deg); } }
 
         .cr-sel{ position:relative; flex:none; }
         .cr-sel-trigger{ display:flex; align-items:center; gap:6px; font-family:var(--font-mono); font-size:13.5px;
@@ -1398,18 +1458,22 @@ function CreateScreen({ payment, setPayment, onBack, onContinue }) {
                   <input className="cr-amount-input" type="number" value={amount}
                     onChange={(e) => setAmount(e.target.value)} placeholder="0" />
                 </div>
-                <SelectPay value={receiveAsset} options={["USDT0", "USDC", "ETH"]} onChange={setReceiveAsset} align="right" />
+                <SelectPay value={receiveAsset} options={["USDT0"]} onChange={setReceiveAsset} align="right" />
               </div>
               <div className="cr-row">
                 <div>
                   <div className="cr-row-label">You pay</div>
-                  <div className="cr-preview">{converted}<span>{buyerAsset}</span></div>
+                  <div className="cr-preview">
+                    {quoteLoading ? <span className="cr-preview-loading"><Spinner /></span> : <>{youPay ?? "—"}</>}
+                    <span>{buyerAsset}</span>
+                  </div>
+                  {quoteError && <div className="cr-preview-error" role="alert">{quoteError}</div>}
                 </div>
-                <SelectPay value={buyerAsset} options={["FXRP", "FLR"]} onChange={setBuyerAsset} align="right" />
+                <SelectPay value={buyerAsset} options={["FXRP", "WFLR"]} onChange={setBuyerAsset} align="right" />
               </div>
             </div>
 
-            <button className="cr-cta" disabled={!canContinue} onClick={() => { setPayment((p) => ({ ...p, convertedAmount: converted })); onContinue(); }}>Review Payment</button>
+            <button className="cr-cta" disabled={!canContinue} onClick={() => { setPayment((p) => ({ ...p, convertedAmount: youPay })); onContinue(); }}>Review Payment</button>
           </div>
         </div>
       </div>
@@ -1868,7 +1932,7 @@ export default function SeiraApp() {
     amount: "25",
     receiveAsset: "USDT0",
     buyerAsset: "FXRP",
-    convertedAmount: "54.73",
+    convertedAmount: "",
   });
 
   const goTo = (s) => { setScreen(s); if (typeof window !== "undefined") window.scrollTo(0, 0); };
