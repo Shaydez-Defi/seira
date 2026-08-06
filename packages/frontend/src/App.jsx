@@ -50,17 +50,12 @@ const COSTON2_NETWORK = {
   blockExplorerUrls: ["https://coston2-explorer.flare.network"],
 };
 
-/* Seira API base URL. In a Codespace the frontend is served from
-   https://<name>-5173.app.github.dev and the API (port 3000) from the same
-   prefix at https://<name>-3000.app.github.dev, so re-derive it from the
-   current hostname; otherwise honor VITE_API_URL or default to localhost. */
+/* Seira API base URL. Default is same-origin: the Vite dev server proxies
+   /api/* to the container-local API (see vite.config.js), so the browser
+   never makes a cross-origin request and Codespaces forwarded-port CORS is
+   irrelevant. An absolute VITE_API_URL overrides it when needed. */
 function resolveApiBaseUrl() {
-  const explicit = import.meta.env.VITE_API_URL;
-  if (explicit) return explicit;
-  const host = window.location.hostname;
-  const codespace = host.match(/^(.+)-(\d+)\.app\.github\.dev$/);
-  if (codespace) return `https://${codespace[1]}-3000.app.github.dev`;
-  return "http://localhost:3000";
+  return import.meta.env.VITE_API_URL ?? "";
 }
 
 /** Formats a raw 18-decimal balance with thousands separators for display. */
