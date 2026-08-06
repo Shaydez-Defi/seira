@@ -84,8 +84,23 @@ describe("GET /api/health", () => {
     const { app } = makeTestApp();
     const res = await request(app)
       .get("/api/health")
-      .set("Origin", "https://shaydez-dev--5173.app.github.dev");
-    expect(res.headers["access-control-allow-origin"]).toBe("https://shaydez-dev--5173.app.github.dev");
+      .set("Origin", "https://potential-lamp-69x5j7xg9ggq3rrw7-5173.app.github.dev");
+    expect(res.headers["access-control-allow-origin"]).toBe(
+      "https://potential-lamp-69x5j7xg9ggq3rrw7-5173.app.github.dev"
+    );
+  });
+
+  it("answers the OPTIONS preflight for a Codespaces origin with CORS headers", async () => {
+    const { app } = makeTestApp();
+    const res = await request(app)
+      .options("/api/health")
+      .set("Origin", "https://potential-lamp-69x5j7xg9ggq3rrw7-5173.app.github.dev")
+      .set("Access-Control-Request-Method", "GET");
+    expect(res.status).toBe(204);
+    expect(res.headers["access-control-allow-origin"]).toBe(
+      "https://potential-lamp-69x5j7xg9ggq3rrw7-5173.app.github.dev"
+    );
+    expect(res.headers["access-control-allow-methods"]).toContain("GET");
   });
 
   it("does not set CORS headers for non-localhost origins", async () => {
