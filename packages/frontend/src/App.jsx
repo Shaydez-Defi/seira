@@ -65,6 +65,32 @@ function formatTokenAmount(raw) {
   return new Intl.NumberFormat("en-US").format(Number(fixed));
 }
 
+/** Builds the PaymentIntent the API expects from the current payment draft. */
+function buildPaymentIntent(payment, walletAddress) {
+  return {
+    intent: "payment",
+    payerAsset: payment.buyerAsset,
+    receiverAsset: payment.receiveAsset,
+    receiverAmount: payment.amount,
+    recipient: walletAddress || payment.recipient,
+    constraints: {},
+  };
+}
+
+/** Shrinks a 0x-prefixed address or tx hash to its first 6 and last 4 characters. */
+function shortHash(value) {
+  if (typeof value !== "string" || !/^0x/i.test(value) || value.length < 12) return value || "—";
+  return `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+
+/** Converts a millisecond estimate into a { value, unit } pair for display. */
+function formatEstimatedTime(msString) {
+  const ms = Number(msString);
+  if (Number.isNaN(ms)) return { value: msString || "—", unit: "sec" };
+  if (ms >= 1000) return { value: `${Math.round((ms / 1000) * 10) / 10}`, unit: "sec" };
+  return { value: `${ms}`, unit: "ms" };
+}
+
 /** True when the EIP-1193 error means the user rejected the prompt. */
 function isUserRejected(err) {
   return typeof err === "object" && err !== null && "code" in err && err.code === 4001;
@@ -549,12 +575,6 @@ function DropletGlyph({ size = 16 }) {
 }
 
 
-const TICKER_STEPS = [
-  { key: "acquire", label: "Acquire", detail: "Locking 54.73 FXRP" },
-  { key: "convert", label: "Convert", detail: "Routing through Seira Router" },
-  { key: "transfer", label: "Transfer", detail: "Sending to Coffee House" },
-  { key: "verify", label: "Verify", detail: "Confirming on Coston2" },
-];
 const BRAND_STEPS = ["Acquire", "Convert", "Transfer", "Verify"];
 
 function LandingScreen({ onStart }) {
@@ -1232,7 +1252,7 @@ function ConnectScreen({ onConnected }) {
                     <div className="balance-verified"><RouteVerified /> Wallet connected, ready to send</div>
                   </div>
                 </div>
-                <button className="connect-btn make-payment-btn" onClick={onConnected}>Make Payment</button>
+                <button className="connect-btn make-payment-btn" onClick={() => onConnected(session.address)}>Make Payment</button>
               </div>
             )}
           </div>
@@ -1485,9 +1505,62 @@ function CreateScreen({ payment, setPayment, onBack, onContinue }) {
   );
 }
 
-function ConfirmScreen({ payment, onBack, onConfirm }) {
+function ConfirmScreen({ payment, walletAddress, onBack, onConfirm }) {
   const [routeIn, setRouteIn] = useState(false);
-  useEffect(() => { const t = setTimeout(() => setRouteIn(true), 120); return () => clearTimeout(t); }, []);
+  const [plan, setPlan] = useState(null);
+  const [planState, setPlanState] = useState("loading"); // loading | ready | error
+  const [planError, setPlanError] = useState(null);
+  const [confirming, setConfirming] = useState(false);
+
+  useEffect(() => {
+    const t = setTimeout(() => setRouteIn(true), 120);
+    return () => clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const intent = buildPaymentIntent(payment, walletAddress);
+    fetch(`${resolveApiBaseUrl()}/api/plan`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(intent),
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(data?.error ?? `plan request failed (${res.status})`);
+        return data;
+      })
+      .then((data) => {
+        if (cancelled) return;
+        setPlan(data);
+        setPlanState("ready");
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setPlanError(err?.message ?? "Could not plan this payment. Please try again.");
+        setPlanState("error");
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleConfirm = () => {
+    if (!plan || confirming) return;
+    const intent = buildPaymentIntent(payment, walletAddress);
+    setConfirming(true);
+    const promise = fetch(`${resolveApiBaseUrl()}/api/execute`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ plan, intent }),
+    }).then(async (res) => {
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error ?? `execute request failed (${res.status})`);
+      return data;
+    });
+    onConfirm({ plan, intent, promise });
+  };
+
+  const estimate = plan ? formatEstimatedTime(plan.estimatedTime) : { value: "—", unit: "" };
+  const canConfirm = planState === "ready" && plan !== null && !confirming;
 
   return (
     <div className="app-shell">
@@ -1579,8 +1652,10 @@ function ConfirmScreen({ payment, onBack, onConfirm }) {
         .cf-cta{ width:100%; font-size:15px; font-weight:600; color:var(--paper); background:var(--ink);
           border:none; border-radius:11px; padding:16px; cursor:pointer;
           transition:transform .15s var(--ease-out), background .15s var(--ease-out); }
-        .cf-cta:hover{ background:var(--pink-deep); }
-        .cf-cta:active{ transform:scale(.98); }
+        .cf-cta:hover:not(:disabled){ background:var(--pink-deep); }
+        .cf-cta:active:not(:disabled){ transform:scale(.98); }
+        .cf-cta:disabled{ opacity:.4; cursor:not-allowed; }
+        .cf-plan-error{ font-size:12.5px; color:var(--pink-deep); margin-top:8px; line-height:1.45; }
 
         @media (prefers-reduced-motion: reduce){
           .cf-route-line{ transition:none; transform:scaleX(1); }
@@ -1649,16 +1724,26 @@ function ConfirmScreen({ payment, onBack, onConfirm }) {
             <div className="cf-stats-panel">
               <div className="cf-stat">
                 <ClockGlyph />
-                <div className="cf-stat-text"><span className="cf-stat-k">Estimated time</span><span className="cf-stat-v">6<span>sec</span></span></div>
+                <div className="cf-stat-text"><span className="cf-stat-k">Estimated time</span>
+                  <span className="cf-stat-v">
+                    {planState === "loading" ? <Spinner size={15} /> : <>{estimate.value}<span>{estimate.unit}</span></>}
+                  </span>
+                </div>
               </div>
               <div className="cf-stat-div" />
               <div className="cf-stat">
                 <DropletGlyph />
-                <div className="cf-stat-text"><span className="cf-stat-k">Estimated cost</span><span className="cf-stat-v">0.002<span>FLR</span></span></div>
+                <div className="cf-stat-text"><span className="cf-stat-k">Estimated cost</span>
+                  <span className="cf-stat-v">
+                    {planState === "loading" ? <Spinner size={15} /> : <>{plan?.estimatedCost ?? "—"}<span>FLR</span></>}
+                  </span>
+                </div>
               </div>
             </div>
 
-            <button className="cf-cta" onClick={onConfirm}>Confirm & Send</button>
+            {planState === "error" && <div className="cf-plan-error" role="alert">{planError}</div>}
+
+            <button className="cf-cta" disabled={!canConfirm} onClick={handleConfirm}>Confirm & Send</button>
           </div>
         </div>
       </div>
@@ -1666,15 +1751,63 @@ function ConfirmScreen({ payment, onBack, onConfirm }) {
   );
 }
 
-function StatusScreen({ payment, onDone, onViewMerchant }) {
-  const [current, setCurrent] = useState(0);
-  const [done, setDone] = useState(false);
+function StatusScreen({ payment, execution, onDone, onViewMerchant }) {
+  const [receipt, setReceipt] = useState(null);
+  const [execError, setExecError] = useState(null);
 
   useEffect(() => {
-    if (current >= TICKER_STEPS.length) { setDone(true); return; }
-    const t = setTimeout(() => setCurrent((c) => c + 1), 1100);
-    return () => clearTimeout(t);
-  }, [current]);
+    let cancelled = false;
+    execution.promise
+      .then((r) => {
+        if (!cancelled) setReceipt(r);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setExecError(err?.message ?? "Execution failed to start. Please try again.");
+      });
+    return () => { cancelled = true; };
+  }, [execution]);
+
+  const planSteps = execution.plan.steps;
+  const convertStep = planSteps.find((s) => s.action === "ConvertAsset");
+  const transferStep = planSteps.find((s) => s.action === "Transfer");
+  const payerAsset =
+    planSteps.find((s) => s.action === "AcquireAsset")?.asset ?? execution.intent.payerAsset;
+  const recipient = transferStep?.to ?? execution.intent.recipient;
+
+  const okCount = receipt ? receipt.steps.filter((s) => s.status === "ok").length : 0;
+  const failedStep = receipt ? receipt.steps.find((s) => s.status === "failed") : null;
+  const failIndex = failedStep ? planSteps.findIndex((s) => s.stepId === failedStep.stepId) : -1;
+
+  const settled = receipt !== null && receipt.status === "settled";
+  const pending = receipt === null && execError === null;
+
+  const displaySteps = [
+    { key: "acquire", label: "Acquire", detail: `Locking ${execution.plan.estimatedPayerAmount} ${payerAsset}` },
+    { key: "convert", label: "Convert", detail: `Routing through ${convertStep?.preferredAdapter ?? "Seira Router"}` },
+    { key: "transfer", label: "Transfer", detail: `Sending to ${shortHash(recipient)}` },
+    { key: "verify", label: "Verify", detail: "Confirming on Coston2" },
+  ];
+  const progress = receipt ? (okCount / displaySteps.length) * 100 : 6;
+
+  const stepState = (i) => {
+    if (receipt) {
+      if (i === failIndex) return "failed";
+      return i < okCount ? "done" : "pending";
+    }
+    return i === 0 ? "active" : "pending";
+  };
+
+  const convertReceipt = convertStep ? receipt?.steps.find((s) => s.stepId === convertStep.stepId) : null;
+  const route = `${execution.intent.payerAsset} → ${convertStep?.preferredAdapter ?? "Seira Router"} → ${execution.intent.receiverAsset}`;
+  const txHashShort = convertReceipt?.txHash ? shortHash(convertReceipt.txHash) : "—";
+
+  const label = pending ? "Settling your payment to" : settled ? "Payment complete" : "Payment did not settle";
+  const headline = pending
+    ? payment.recipient || "your recipient"
+    : settled
+      ? `${payment.recipient || "Recipient"} got paid`
+      : "Your recipient wasn't paid";
 
   return (
     <div className="app-shell">
@@ -1755,6 +1888,13 @@ function StatusScreen({ payment, onDone, onViewMerchant }) {
           display:inline-flex; align-items:center; gap:6px; white-space:nowrap; transition:gap .18s var(--ease-out), color .18s var(--ease-out); }
         .st-merchant-link:hover{ gap:9px; color:var(--pink-deep); }
 
+        .st-node.is-failed .st-node-mark{ background:var(--pink-deep); border-color:var(--pink-deep); }
+        .st-node.is-failed .st-node-mark svg{ color:var(--paper); }
+        .st-node.is-failed .st-node-label{ color:var(--pink-deep); }
+        .st-error{ border:1px solid rgba(194,0,63,.35); background:rgba(255,227,236,.35); border-radius:16px; padding:20px 22px; margin-bottom:24px; }
+        .st-error-title{ font-family:var(--font-display); font-size:clamp(22px, 1.8vw, 28px); margin-bottom:6px; }
+        .st-error-msg{ font-size:12.5px; color:var(--ink-soft); line-height:1.55; font-family:var(--font-mono); }
+
         .spin{ animation:spin .8s linear infinite; }
         @keyframes spin{ to{ transform:rotate(360deg); } }
         @media (prefers-reduced-motion: reduce){
@@ -1784,35 +1924,57 @@ function StatusScreen({ payment, onDone, onViewMerchant }) {
 
         <div className="main-stage">
           <div className="st-card">
-            {!done ? (
-              <>
-                <span className="st-label">Settling your payment to</span>
-                <h1 className="st-headline">{payment.recipient || "your recipient"}</h1>
-                <div className="st-ticker">
-                  <div className="st-spine"><div className="st-spine-fill" style={{ height: `${(current / TICKER_STEPS.length) * 100}%` }} /></div>
-                  {TICKER_STEPS.map((s, i) => (
-                    <div key={s.key} className={`st-node ${i < current ? "is-done" : i === current ? "is-active" : ""}`}>
-                      <span className="st-node-mark">{i < current ? <Check size={9} /> : i === current ? <Spinner size={10} /> : null}</span>
-                      <span className="st-node-text"><span className="st-node-label">{s.label}</span><span className="st-node-detail">{s.detail}</span></span>
-                    </div>
-                  ))}
-                </div>
-              </>
-            ) : (
+            <span className="st-label">{label}</span>
+            <h1 className="st-headline">{headline}</h1>
+
+            <div className="st-ticker">
+              <div className="st-spine"><div className="st-spine-fill" style={{ height: `${progress}%` }} /></div>
+              {displaySteps.map((s, i) => {
+                const st = stepState(i);
+                return (
+                  <div key={s.key} className={`st-node ${st === "done" ? "is-done" : st === "active" ? "is-active" : st === "failed" ? "is-failed" : ""}`}>
+                    <span className="st-node-mark">
+                      {st === "done" ? <Check size={9} /> : st === "active" ? <Spinner size={10} /> : st === "failed" ? (
+                        <svg width="9" height="9" viewBox="0 0 9 9" fill="none" aria-hidden="true">
+                          <path d="M1 1l7 7M8 1L1 8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                        </svg>
+                      ) : null}
+                    </span>
+                    <span className="st-node-text"><span className="st-node-label">{s.label}</span><span className="st-node-detail">{s.detail}</span></span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {!pending && (
               <div className="st-receipt">
-                <span className="st-label">Payment complete</span>
-                <h1 className="st-headline">{payment.recipient || "Recipient"} got paid</h1>
-                <div className="st-receipt-panel">
-                  <div className="st-received-k">Merchant received</div>
-                  <div className="st-received-v">{payment.amount}<span>{payment.receiveAsset}</span></div>
-                  <div className="st-meta-row"><span className="st-meta-k">Route</span><span className="st-meta-v">{payment.buyerAsset} → Seira Router → {payment.receiveAsset}</span></div>
-                  <div className="st-meta-row"><span className="st-meta-k">Transaction</span><span className="st-meta-v">0x8f2a...c94d</span></div>
-                  <div className="st-meta-row"><span className="st-meta-k">Settled in</span><span className="st-meta-v">6 sec</span></div>
-                </div>
-                <div className="st-actions">
-                  <button className="st-done-btn" onClick={onDone}>Done</button>
-                  <button className="st-merchant-link" onClick={onViewMerchant}>View as Merchant <ArrowUpRight /></button>
-                </div>
+                {settled ? (
+                  <>
+                    <div className="st-receipt-panel">
+                      <div className="st-received-k">Merchant received</div>
+                      <div className="st-received-v">{payment.amount}<span>{payment.receiveAsset}</span></div>
+                      <div className="st-meta-row"><span className="st-meta-k">Route</span><span className="st-meta-v">{route}</span></div>
+                      <div className="st-meta-row"><span className="st-meta-k">Transaction</span><span className="st-meta-v">{txHashShort}</span></div>
+                      <div className="st-meta-row"><span className="st-meta-k">Settled in</span><span className="st-meta-v">Settled</span></div>
+                    </div>
+                    <div className="st-actions">
+                      <button className="st-done-btn" onClick={onDone}>Done</button>
+                      <button className="st-merchant-link" onClick={() => onViewMerchant(receipt)}>View as Merchant <ArrowUpRight /></button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="st-error" role="alert">
+                      <div className="st-error-title">
+                        {execError ? "Could not reach the Seira API" : receipt.status === "rolled_back" ? "Payment rolled back" : "Payment failed"}
+                      </div>
+                      <div className="st-error-msg">{execError ?? receipt.error ?? "Execution did not settle."}</div>
+                    </div>
+                    <div className="st-actions">
+                      <button className="st-done-btn" onClick={onDone}>Done</button>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -1822,9 +1984,15 @@ function StatusScreen({ payment, onDone, onViewMerchant }) {
   );
 }
 
-function MerchantScreen({ payment, onBack }) {
+function MerchantScreen({ payment, execution, receipt, onBack }) {
   const [settled, setSettled] = useState(false);
   useEffect(() => { const t = setTimeout(() => setSettled(true), 120); return () => clearTimeout(t); }, []);
+
+  const plan = execution?.plan;
+  const convertStep = plan?.steps.find((s) => s.action === "ConvertAsset");
+  const convertReceipt = receipt?.steps.find((s) => convertStep && s.stepId === convertStep.stepId);
+  const route = `${execution?.intent.payerAsset ?? payment.buyerAsset} → ${convertStep?.preferredAdapter ?? "Seira Router"} → ${execution?.intent.receiverAsset ?? payment.receiveAsset}`;
+  const txHashShort = convertReceipt?.txHash ? shortHash(convertReceipt.txHash) : "—";
 
   return (
     <div className="app-shell">
@@ -1915,9 +2083,9 @@ function MerchantScreen({ payment, onBack }) {
             <p className="mr-from">from a buyer who paid in <b>{payment.buyerAsset}</b>. No manual swap, on either side.</p>
 
             <div className="mr-proof">
-              <div className="mr-proof-row"><span className="mr-proof-k">Settlement route</span><span className="mr-proof-v">{payment.buyerAsset} → Seira Router → {payment.receiveAsset}</span></div>
-              <div className="mr-proof-row"><span className="mr-proof-k">Transaction</span><span className="mr-proof-v">0x8f2a...c94d</span></div>
-              <div className="mr-proof-row"><span className="mr-proof-k">Settled in</span><span className="mr-proof-v">6 sec</span></div>
+              <div className="mr-proof-row"><span className="mr-proof-k">Settlement route</span><span className="mr-proof-v">{route}</span></div>
+              <div className="mr-proof-row"><span className="mr-proof-k">Transaction</span><span className="mr-proof-v">{txHashShort}</span></div>
+              <div className="mr-proof-row"><span className="mr-proof-k">Settled in</span><span className="mr-proof-v">Settled</span></div>
               <div className="mr-proof-row"><span className="mr-proof-k">Network</span><span className="mr-proof-v">Coston2</span></div>
             </div>
 
@@ -1931,6 +2099,9 @@ function MerchantScreen({ payment, onBack }) {
 
 export default function SeiraApp() {
   const [screen, setScreen] = useState("landing");
+  const [walletAddress, setWalletAddress] = useState("");
+  const [execution, setExecution] = useState(null);
+  const [merchantReceipt, setMerchantReceipt] = useState(null);
   const [payment, setPayment] = useState({
     recipient: "Coffee House",
     amount: "25",
@@ -1944,7 +2115,7 @@ export default function SeiraApp() {
   return (
     <>
       {screen === "landing" && <LandingScreen onStart={() => goTo("connect")} />}
-      {screen === "connect" && <ConnectScreen onConnected={() => goTo("create")} />}
+      {screen === "connect" && <ConnectScreen onConnected={(address) => { setWalletAddress(address ?? ""); goTo("create"); }} />}
       {screen === "create" && (
         <CreateScreen
           payment={payment}
@@ -1954,12 +2125,29 @@ export default function SeiraApp() {
         />
       )}
       {screen === "confirm" && (
-        <ConfirmScreen payment={payment} onBack={() => goTo("create")} onConfirm={() => goTo("status")} />
+        <ConfirmScreen
+          payment={payment}
+          walletAddress={walletAddress}
+          onBack={() => goTo("create")}
+          onConfirm={(exec) => { setExecution(exec); goTo("status"); }}
+        />
       )}
-      {screen === "status" && (
-        <StatusScreen payment={payment} onDone={() => goTo("landing")} onViewMerchant={() => goTo("merchant")} />
+      {screen === "status" && execution && (
+        <StatusScreen
+          payment={payment}
+          execution={execution}
+          onDone={() => { setExecution(null); goTo("landing"); }}
+          onViewMerchant={(receipt) => { setMerchantReceipt(receipt); goTo("merchant"); }}
+        />
       )}
-      {screen === "merchant" && <MerchantScreen payment={payment} onBack={() => goTo("landing")} />}
+      {screen === "merchant" && (
+        <MerchantScreen
+          payment={payment}
+          execution={execution}
+          receipt={merchantReceipt}
+          onBack={() => { setExecution(null); setMerchantReceipt(null); goTo("landing"); }}
+        />
+      )}
     </>
   );
 }
