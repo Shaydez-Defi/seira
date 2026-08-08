@@ -27,6 +27,15 @@ const TOKENS = `
     --ease-out: cubic-bezier(.16,1,.3,1);
     --ease-in-out: cubic-bezier(.65,0,.35,1);
   }
+  *{
+    scrollbar-width:thin;
+    scrollbar-color: var(--ink) var(--paper-dim);
+  }
+  ::-webkit-scrollbar{ width:12px; height:12px; }
+  ::-webkit-scrollbar-track{ background:var(--paper-dim); }
+  ::-webkit-scrollbar-thumb{ background:var(--ink); border:3px solid var(--paper-dim); border-radius:10px; }
+  ::-webkit-scrollbar-thumb:hover{ background:var(--pink-deep); }
+  ::-webkit-scrollbar-corner{ background:var(--paper-dim); }
 `;
 
 const NAV_SECTIONS = [
