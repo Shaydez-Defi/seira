@@ -63,6 +63,7 @@ const COSTON2_NETWORK = {
 };
 
 const GITHUB_REPO_URL = "https://github.com/Shaydez-Defi/seira";
+const GITHUB_README_URL = `${GITHUB_REPO_URL}#readme`;
 const FLARE_URL = "https://flare.network";
 const COSTON2_EXPLORER_URL = "https://coston2-explorer.flare.network";
 const LICENSE_URL = `${GITHUB_REPO_URL}/blob/main/LICENSE`;
@@ -1048,7 +1049,7 @@ function LandingScreen({ onStart }) {
         <div className="nav-left"><SeiraMark size={18} /> <span style={{fontFamily:"var(--font-display)", fontSize:16}}>Seira</span></div>
         <div className="footer-links">
           <a href={GITHUB_REPO_URL} target="_blank" rel="noopener noreferrer">GitHub</a>
-          <a href="#architecture">Documentation</a>
+          <a href={GITHUB_README_URL} target="_blank" rel="noopener noreferrer">Documentation</a>
           <a href={FLARE_URL} target="_blank" rel="noopener noreferrer">Flare</a>
           <a href={COSTON2_EXPLORER_URL} target="_blank" rel="noopener noreferrer">Explorer</a>
         </div>
