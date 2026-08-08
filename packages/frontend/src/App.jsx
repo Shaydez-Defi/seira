@@ -29,13 +29,13 @@ const TOKENS = `
   }
   *{
     scrollbar-width:thin;
-    scrollbar-color: var(--ink) var(--paper-dim);
+    scrollbar-color: var(--ink-soft) transparent;
   }
-  ::-webkit-scrollbar{ width:12px; height:12px; }
-  ::-webkit-scrollbar-track{ background:var(--paper-dim); }
-  ::-webkit-scrollbar-thumb{ background:var(--ink); border:3px solid var(--paper-dim); border-radius:10px; }
-  ::-webkit-scrollbar-thumb:hover{ background:var(--pink-deep); }
-  ::-webkit-scrollbar-corner{ background:var(--paper-dim); }
+  ::-webkit-scrollbar{ width:6px; height:6px; }
+  ::-webkit-scrollbar-track{ background:transparent; }
+  ::-webkit-scrollbar-thumb{ background:var(--ink-soft); border-radius:999px; }
+  ::-webkit-scrollbar-thumb:hover{ background:var(--pink); }
+  ::-webkit-scrollbar-corner{ background:transparent; }
 `;
 
 const NAV_SECTIONS = [
