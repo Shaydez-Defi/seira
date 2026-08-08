@@ -2,6 +2,8 @@
 
 Settlement infrastructure for crypto payments where the payer and payee hold different assets.
 
+![Seira app](./docs/seira-landing-page.png)
+
 ## The problem
 
 Most crypto payment systems assume the payer's asset and the payee's asset are the same. When they're not, the payer has to find a DEX, swap manually, absorb slippage, and hope nothing fails halfway through. Seira removes that requirement. A buyer pays in whatever they hold. A merchant receives whatever they asked for. One confirmation, no manual swapping on either side.
