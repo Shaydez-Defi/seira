@@ -36,6 +36,9 @@ const TOKENS = `
   ::-webkit-scrollbar-thumb{ background:var(--ink-soft); border-radius:999px; }
   ::-webkit-scrollbar-thumb:hover{ background:var(--pink); }
   ::-webkit-scrollbar-corner{ background:transparent; }
+  .app-actions{ display:flex; align-items:center; gap:18px; }
+  .app-disconnect{ display:inline-flex; align-items:center; gap:6px; font-family:var(--font-mono); font-size:11.5px; color:var(--ink-faint); background:none; border:none; cursor:pointer; padding:0; transition:color .15s var(--ease-out); }
+  .app-disconnect:hover{ color:var(--pink); }
 `;
 
 const NAV_SECTIONS = [
@@ -57,6 +60,19 @@ const COSTON2_NETWORK = {
   nativeCurrency: { name: "C2FLR", symbol: "C2FLR", decimals: 18 },
   rpcUrls: [COSTON2_RPC],
   blockExplorerUrls: ["https://coston2-explorer.flare.network"],
+};
+
+const GITHUB_REPO_URL = "https://github.com/Shaydez-Defi/seira";
+const FLARE_URL = "https://flare.network";
+const COSTON2_EXPLORER_URL = "https://coston2-explorer.flare.network";
+const LICENSE_URL = `${GITHUB_REPO_URL}/blob/main/LICENSE`;
+
+const DEFAULT_PAYMENT = {
+  recipient: "Coffee House",
+  amount: "25",
+  receiveAsset: "USDT0",
+  buyerAsset: "FXRP",
+  convertedAmount: "",
 };
 
 /* Seira API base URL. Default is same-origin: the Vite dev server proxies
@@ -894,9 +910,9 @@ function LandingScreen({ onStart }) {
 
         /* FOOTER */
         .footer{ border-top:1px solid var(--line); padding:24px 48px; display:flex; justify-content:space-between; align-items:center; font-size:clamp(13px, .85vw, 14px); color:var(--ink-soft); }
+        .footer a{ color:var(--ink-soft); text-decoration:none; transition:color .15s var(--ease-out); }
+        .footer a:hover{ color:var(--ink); }
         .footer-links{ display:flex; gap:24px; }
-        .footer-links a{ color:var(--ink-soft); text-decoration:none; }
-        .footer-links a:hover{ color:var(--ink); }
         @media (max-width:640px){ .footer{ flex-direction:column; gap:16px; text-align:center; } }
 
         @media (max-width:860px){
@@ -919,7 +935,7 @@ function LandingScreen({ onStart }) {
           {NAV_SECTIONS.map((s) => (
             <a key={s.id} className={`nav-link ${active === s.id ? "is-active" : ""}`} href={`#${s.id}`}>{s.label}</a>
           ))}
-          <a className="nav-link" href="#github">GitHub</a>
+          <a className="nav-link" href={GITHUB_REPO_URL} target="_blank" rel="noopener noreferrer">GitHub</a>
           <button className="nav-cta" onClick={onStart}>Start Payment</button>
         </div>
       </nav>
@@ -1023,7 +1039,7 @@ function LandingScreen({ onStart }) {
           <p>Seira makes interoperability invisible.</p>
           <div className="final-cta-actions">
             <button className="btn-primary" onClick={onStart}>Start Payment</button>
-            <button className="btn-secondary">GitHub <ArrowUpRight /></button>
+            <button className="btn-secondary" onClick={() => window.open(GITHUB_REPO_URL, "_blank", "noopener")}>GitHub <ArrowUpRight /></button>
           </div>
         </Reveal>
       </section>
@@ -1031,17 +1047,19 @@ function LandingScreen({ onStart }) {
       <footer className="footer">
         <div className="nav-left"><SeiraMark size={18} /> <span style={{fontFamily:"var(--font-display)", fontSize:16}}>Seira</span></div>
         <div className="footer-links">
-          <a href="#github">GitHub</a><a href="#docs">Documentation</a><a href="#flare">Flare</a><a href="#explorer">Explorer</a>
+          <a href={GITHUB_REPO_URL} target="_blank" rel="noopener noreferrer">GitHub</a>
+          <a href="#architecture">Documentation</a>
+          <a href={FLARE_URL} target="_blank" rel="noopener noreferrer">Flare</a>
+          <a href={COSTON2_EXPLORER_URL} target="_blank" rel="noopener noreferrer">Explorer</a>
         </div>
-        <span>MIT License</span>
+        <a href={LICENSE_URL} target="_blank" rel="noopener noreferrer">MIT License</a>
       </footer>
     </div>
   );
 }
 
-function ConnectScreen({ onConnected }) {
-  const [phase, setPhase] = useState("idle"); // idle | connecting | connected
-  const [session, setSession] = useState(null); // { address, fxrp, wflr }
+function ConnectScreen({ session, setSession, onConnected, onDisconnect }) {
+  const [phase, setPhase] = useState(() => (session ? "connected" : "idle")); // idle | connecting | connected
   const [notice, setNotice] = useState(null);
 
   const connect = useCallback(async () => {
@@ -1207,6 +1225,7 @@ function ConnectScreen({ onConnected }) {
         .balance-verified{ display:flex; align-items:center; gap:7px; font-size:12px; color:var(--ink-soft); }
 
         .make-payment-btn{ margin-top:4px; }
+        .disconnect-holder{ display:flex; justify-content:center; width:100%; margin-top:14px; }
 
         @media (prefers-reduced-motion: reduce){
           .connect-result{ animation:none; }
@@ -1262,6 +1281,7 @@ function ConnectScreen({ onConnected }) {
                   </div>
                 </div>
                 <button className="connect-btn make-payment-btn" onClick={() => onConnected(session.address)}>Make Payment</button>
+                <div className="disconnect-holder"><button className="app-disconnect" onClick={onDisconnect}>Disconnect</button></div>
               </div>
             )}
           </div>
@@ -1271,7 +1291,7 @@ function ConnectScreen({ onConnected }) {
   );
 }
 
-function CreateScreen({ payment, setPayment, onBack, onContinue }) {
+function CreateScreen({ payment, setPayment, onBack, onContinue, onDisconnect }) {
   const { recipient, amount, receiveAsset, buyerAsset } = payment;
   const setRecipient = (v) => setPayment((p) => ({ ...p, recipient: v }));
   const setAmount = (v) => setPayment((p) => ({ ...p, amount: v }));
@@ -1461,8 +1481,11 @@ function CreateScreen({ payment, setPayment, onBack, onContinue }) {
             <div className="main-top-left"><SeiraMark size={20} /></div>
             <button className="cr-back" onClick={onBack}><ArrowLeft /> Wallet</button>
           </div>
-          <div className="cr-steps">
-            <span className="cr-step is-active" /><span className="cr-step" /><span className="cr-step" />
+          <div className="app-actions">
+            <button className="app-disconnect" onClick={onDisconnect}>Disconnect</button>
+            <div className="cr-steps">
+              <span className="cr-step is-active" /><span className="cr-step" /><span className="cr-step" />
+            </div>
           </div>
         </div>
 
@@ -1514,7 +1537,7 @@ function CreateScreen({ payment, setPayment, onBack, onContinue }) {
   );
 }
 
-function ConfirmScreen({ payment, walletAddress, onBack, onConfirm }) {
+function ConfirmScreen({ payment, walletAddress, onBack, onConfirm, onDisconnect }) {
   const [routeIn, setRouteIn] = useState(false);
   const [plan, setPlan] = useState(null);
   const [planState, setPlanState] = useState("loading"); // loading | ready | error
@@ -1691,8 +1714,11 @@ function ConfirmScreen({ payment, walletAddress, onBack, onConfirm }) {
             <div className="main-top-left"><SeiraMark size={20} /></div>
             <button className="cf-back" onClick={onBack}><ArrowLeft /> Edit payment</button>
           </div>
-          <div className="cf-steps">
-            <span className="cf-step is-done" /><span className="cf-step is-active" /><span className="cf-step" />
+          <div className="app-actions">
+            <button className="app-disconnect" onClick={onDisconnect}>Disconnect</button>
+            <div className="cf-steps">
+              <span className="cf-step is-done" /><span className="cf-step is-active" /><span className="cf-step" />
+            </div>
           </div>
         </div>
 
@@ -1760,7 +1786,7 @@ function ConfirmScreen({ payment, walletAddress, onBack, onConfirm }) {
   );
 }
 
-function StatusScreen({ payment, execution, onDone, onViewMerchant }) {
+function StatusScreen({ payment, execution, onDone, onViewMerchant, onDisconnect }) {
   const [receipt, setReceipt] = useState(null);
   const [execError, setExecError] = useState(null);
 
@@ -1928,7 +1954,10 @@ function StatusScreen({ payment, execution, onDone, onViewMerchant }) {
       <div className="main-col">
         <div className="main-top">
           <div className="main-top-left"><SeiraMark size={20} /></div>
-          <div className="st-steps"><span className="st-step" /><span className="st-step" /><span className="st-step" /></div>
+          <div className="app-actions">
+            <button className="app-disconnect" onClick={onDisconnect}>Disconnect</button>
+            <div className="st-steps"><span className="st-step" /><span className="st-step" /><span className="st-step" /></div>
+          </div>
         </div>
 
         <div className="main-stage">
@@ -1993,7 +2022,7 @@ function StatusScreen({ payment, execution, onDone, onViewMerchant }) {
   );
 }
 
-function MerchantScreen({ payment, execution, receipt, onBack }) {
+function MerchantScreen({ payment, execution, receipt, onBack, onDisconnect }) {
   const [settled, setSettled] = useState(false);
   useEffect(() => { const t = setTimeout(() => setSettled(true), 120); return () => clearTimeout(t); }, []);
 
@@ -2082,7 +2111,7 @@ function MerchantScreen({ payment, execution, receipt, onBack }) {
       </aside>
 
       <div className="main-col">
-        <div className="main-top"><SeiraMark size={20} /><span className="mr-brand">Seira · Merchant</span></div>
+        <div className="main-top"><SeiraMark size={20} /><span className="mr-brand">Seira · Merchant</span><button className="app-disconnect" style={{ marginLeft: "auto" }} onClick={onDisconnect}>Disconnect</button></div>
 
         <div className="main-stage">
           <div className="mr-card">
@@ -2108,45 +2137,57 @@ function MerchantScreen({ payment, execution, receipt, onBack }) {
 
 export default function SeiraApp() {
   const [screen, setScreen] = useState("landing");
-  const [walletAddress, setWalletAddress] = useState("");
+  const [session, setSession] = useState(null); // { address, fxrp, wflr }
   const [execution, setExecution] = useState(null);
   const [merchantReceipt, setMerchantReceipt] = useState(null);
-  const [payment, setPayment] = useState({
-    recipient: "Coffee House",
-    amount: "25",
-    receiveAsset: "USDT0",
-    buyerAsset: "FXRP",
-    convertedAmount: "",
-  });
+  const [payment, setPayment] = useState({ ...DEFAULT_PAYMENT });
 
   const goTo = (s) => { setScreen(s); if (typeof window !== "undefined") window.scrollTo(0, 0); };
+
+  const disconnect = () => {
+    setSession(null);
+    setPayment({ ...DEFAULT_PAYMENT });
+    setExecution(null);
+    setMerchantReceipt(null);
+    goTo("landing");
+  };
 
   return (
     <>
       {screen === "landing" && <LandingScreen onStart={() => goTo("connect")} />}
-      {screen === "connect" && <ConnectScreen onConnected={(address) => { setWalletAddress(address ?? ""); goTo("create"); }} />}
+      {screen === "connect" && (
+        <ConnectScreen
+          session={session}
+          setSession={setSession}
+          onConnected={() => goTo("create")}
+          onDisconnect={disconnect}
+        />
+      )}
       {screen === "create" && (
         <CreateScreen
           payment={payment}
           setPayment={setPayment}
           onBack={() => goTo("connect")}
           onContinue={() => goTo("confirm")}
+          onDisconnect={disconnect}
         />
       )}
       {screen === "confirm" && (
         <ConfirmScreen
           payment={payment}
-          walletAddress={walletAddress}
+          walletAddress={session?.address ?? ""}
           onBack={() => goTo("create")}
           onConfirm={(exec) => { setExecution(exec); goTo("status"); }}
+          onDisconnect={disconnect}
         />
       )}
       {screen === "status" && execution && (
         <StatusScreen
           payment={payment}
           execution={execution}
-          onDone={() => { setExecution(null); goTo("landing"); }}
+          onDone={() => { setExecution(null); goTo("connect"); }}
           onViewMerchant={(receipt) => { setMerchantReceipt(receipt); goTo("merchant"); }}
+          onDisconnect={disconnect}
         />
       )}
       {screen === "merchant" && (
@@ -2154,7 +2195,8 @@ export default function SeiraApp() {
           payment={payment}
           execution={execution}
           receipt={merchantReceipt}
-          onBack={() => { setExecution(null); setMerchantReceipt(null); goTo("landing"); }}
+          onBack={() => { setExecution(null); setMerchantReceipt(null); goTo("connect"); }}
+          onDisconnect={disconnect}
         />
       )}
     </>
