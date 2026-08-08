@@ -10,8 +10,8 @@ const WFLR_ADDRESS = "0xaB6FaD89389B73dBC887d31206A26Fd88d719d1F";
 const CHAIN_ID_COSTON2 = 114n;
 
 /** C2FLR wrapped into WFLR so there is WFLR to spare for the adapter pool. */
-const WFLR_WRAP_AMOUNT = 20n;
-/** Wallet FXRP kept back: enough for a few more 25-USDT0 demo AcquireAsset checks. */
+const WFLR_WRAP_AMOUNT = 50n;
+/** Wallet FXRP kept back so the payer asset stays available for AcquireAsset checks. */
 const RESERVE_FXRP_FOR_DEMO = 30n;
 /** Wallet USDT0 kept back so the signer is never drained to zero. */
 const RESERVE_USDT0 = 1n;
