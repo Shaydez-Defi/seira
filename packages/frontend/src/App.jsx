@@ -53,7 +53,10 @@ const COSTON2_CHAIN_ID_HEX = "0x72";
 const COSTON2_RPC = "https://coston2-api.flare.network/ext/C/rpc";
 const FXRP_ADDRESS = "0x0b6A3645c240605887a5532109323A3E12273dc7";
 const WFLR_ADDRESS = "0xaB6FaD89389B73dBC887d31206A26Fd88d719d1F";
-const ERC20_BALANCE_ABI = ["function balanceOf(address) view returns (uint256)"];
+const ERC20_BALANCE_ABI = [
+  "function balanceOf(address) view returns (uint256)",
+  "function decimals() view returns (uint8)",
+];
 const COSTON2_NETWORK = {
   chainId: COSTON2_CHAIN_ID_HEX,
   chainName: "Coston2",
@@ -85,8 +88,8 @@ function resolveApiBaseUrl() {
 }
 
 /** Formats a raw 18-decimal balance with thousands separators for display. */
-function formatTokenAmount(raw) {
-  const value = Number.parseFloat(formatUnits(raw, 18));
+function formatTokenAmount(raw, decimals) {
+  const value = Number.parseFloat(formatUnits(raw, decimals));
   const fixed = Math.abs(value) >= 1000 ? value.toFixed(1) : value.toFixed(2);
   return new Intl.NumberFormat("en-US").format(Number(fixed));
 }
@@ -191,6 +194,8 @@ async function resolveWalletSession(provider) {
   const read = new JsonRpcProvider(COSTON2_RPC);
   const fxrp = new Contract(FXRP_ADDRESS, ERC20_BALANCE_ABI, read);
   const wflr = new Contract(WFLR_ADDRESS, ERC20_BALANCE_ABI, read);
+  const fxrpDecimals = await fxrp.decimals();
+  const wflrDecimals = await wflr.decimals();
   const [fxrpRaw, wflrRaw] = await Promise.all([
     fxrp.balanceOf(address),
     wflr.balanceOf(address),
@@ -198,8 +203,8 @@ async function resolveWalletSession(provider) {
 
   return {
     address,
-    fxrp: formatTokenAmount(fxrpRaw),
-    wflr: formatTokenAmount(wflrRaw),
+    fxrp: formatTokenAmount(fxrpRaw, fxrpDecimals),
+    wflr: formatTokenAmount(wflrRaw, wflrDecimals),
   };
 }
 
