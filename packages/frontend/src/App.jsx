@@ -203,11 +203,6 @@ async function resolveWalletSession(provider) {
   };
 }
 
-/** True when running in a mobile browser (used for WalletConnect deep-linking). */
-function isMobileDevice() {
-  return typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-}
-
 function SeiraMark({ size = 28, color = "var(--pink)" }) {
   return (
     <svg width={size} height={size * 0.66} viewBox="0 0 120 80" fill="none" aria-hidden="true">
@@ -1148,10 +1143,8 @@ function LandingScreen({ onStart }) {
 function ConnectScreen({ session, setSession, onConnected, onDisconnect }) {
   const [phase, setPhase] = useState(() => (session ? "connected" : "idle")); // idle | connecting | wc | connected
   const [notice, setNotice] = useState(null);
-  const [wcMode, setWcMode] = useState(false); // true while the WalletConnect panel is shown
-  const [wcUri, setWcUri] = useState(null); // pairing URI for QR / deep-link
+  const [wcMode, setWcMode] = useState(false); // true while the WalletConnect flow is active
   const [wcConnected, setWcConnected] = useState(false);
-  const [wcQrDataUrl, setWcQrDataUrl] = useState(null); // rendered QR for the pairing URI
   const wcProviderRef = useRef(null);
 
   const hasInjectedWallet =
@@ -1207,8 +1200,6 @@ function ConnectScreen({ session, setSession, onConnected, onDisconnect }) {
     setPhase("wc");
     setNotice(null);
     setWcMode(true);
-    setWcUri(null);
-    setWcQrDataUrl(null);
     setWcConnected(false);
     try {
       // Loaded on demand so the injected-wallet path never pays for this bundle.
@@ -1220,12 +1211,12 @@ function ConnectScreen({ session, setSession, onConnected, onDisconnect }) {
         chains: [114],
         optionalChains: [114],
         rpcMap: { 114: COSTON2_RPC },
-        showQrModal: false,
+        showQrModal: true,
         metadata: WALLET_CONNECT_METADATA,
       });
       wcProviderRef.current = provider;
-      provider.on("display_uri", (uri) => setWcUri(uri));
 
+      // Opens the standard wallet-picker popup (list of wallets + QR / deep link).
       await provider.connect({ chains: [114] });
 
       // Bring the wallet to Coston2 exactly like the injected path.
@@ -1237,9 +1228,8 @@ function ConnectScreen({ session, setSession, onConnected, onDisconnect }) {
       } else {
         setNotice(err?.message ?? "Could not connect via WalletConnect. Please try again.");
       }
-      setWcUri(null);
-      setWcQrDataUrl(null);
       setPhase("idle");
+      setWcMode(false);
     }
   }, [finalizeSession]);
 
@@ -1251,8 +1241,6 @@ function ConnectScreen({ session, setSession, onConnected, onDisconnect }) {
 
   const closeWalletConnect = useCallback(() => {
     setWcMode(false);
-    setWcUri(null);
-    setWcQrDataUrl(null);
     setPhase("idle");
     setNotice(null);
     const provider = wcProviderRef.current;
@@ -1261,34 +1249,6 @@ function ConnectScreen({ session, setSession, onConnected, onDisconnect }) {
     }
     wcProviderRef.current = null;
   }, [wcConnected]);
-
-  const copyWcUri = useCallback(async () => {
-    if (!wcUri) return;
-    try {
-      await navigator.clipboard.writeText(wcUri);
-      setNotice("Pairing link copied. Open it in your wallet app.");
-    } catch {
-      setNotice("Could not copy the pairing link. Copy it manually below.");
-    }
-  }, [wcUri]);
-
-  /* Render the pairing QR once a WalletConnect URI arrives. */
-  useEffect(() => {
-    if (!wcUri) return undefined;
-    let cancelled = false;
-    import("qrcode").then((QRCode) =>
-      QRCode.toDataURL(wcUri, { margin: 1, width: 240, errorCorrectionLevel: "M" })
-        .then((dataUrl) => {
-          if (!cancelled) setWcQrDataUrl(dataUrl);
-        })
-        .catch(() => {
-          if (!cancelled) setWcQrDataUrl(null);
-        })
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [wcUri]);
 
   /* Tear down a dangling WalletConnect provider when the screen unmounts. */
   useEffect(() => {
@@ -1300,8 +1260,6 @@ function ConnectScreen({ session, setSession, onConnected, onDisconnect }) {
       wcProviderRef.current = null;
     };
   }, []);
-
-  const isMobile = isMobileDevice();
 
   const shortAddress =
     session && typeof session.address === "string"
@@ -1371,13 +1329,8 @@ function ConnectScreen({ session, setSession, onConnected, onDisconnect }) {
         .wc-panel-head{ display:flex; align-items:center; justify-content:space-between; font-size:13px; color:var(--ink-soft); margin-bottom:12px; }
         .wc-close{ background:none; border:none; cursor:pointer; font-size:18px; line-height:1; color:var(--ink-faint); padding:0 4px; }
         .wc-close:hover{ color:var(--pink); }
-        .wc-qr{ width:200px; height:200px; border:1px solid var(--line); border-radius:10px; margin:6px auto 12px; display:block; }
         .wc-wait{ display:flex; align-items:center; justify-content:center; gap:9px; color:var(--ink-soft); font-size:13.5px; padding:26px 0; }
-        .wc-mobile{ padding:6px 0 2px; }
-        .wc-mobile p{ font-size:13px; color:var(--ink-soft); margin:0 0 12px; }
-        .wc-open{ margin:0 auto; }
-        .wc-copy{ background:none; border:none; cursor:pointer; color:var(--pink-deep); font-size:12.5px; font-weight:600; padding:6px 0; }
-        .wc-copy:hover{ text-decoration:underline; }
+        .wc-done{ font-size:13px; color:var(--ink-soft); text-align:center; padding:6px 0 16px; }
         .connect-network-note{ font-size:12px; color:var(--ink-faint); margin-top:14px; }
         .connect-notice{ font-size:13px; color:var(--pink-deep); margin-top:14px; line-height:1.5; }
         .spin{ animation:spin .8s linear infinite; }
@@ -1460,25 +1413,18 @@ function ConnectScreen({ session, setSession, onConnected, onDisconnect }) {
                 {wcMode && !wcConnected && (
                   <div className="wc-panel">
                     <div className="wc-panel-head">
-                      <span>Scan with your wallet app</span>
+                      <span>Choose a wallet</span>
                       <button className="wc-close" onClick={closeWalletConnect} aria-label="Close WalletConnect panel">×</button>
                     </div>
-                    {phase === "wc" && !wcUri ? (
-                      <div className="wc-wait"><Spinner /> Connecting to WalletConnect relay…</div>
-                    ) : isMobile ? (
-                      <div className="wc-mobile">
-                        <p>Pair this session in your wallet app:</p>
-                        <a className="connect-btn wc-open" href={wcUri ?? "#"} target="_blank" rel="noopener noreferrer">
-                          Open in wallet app
-                        </a>
-                      </div>
-                    ) : wcQrDataUrl ? (
-                      <img className="wc-qr" src={wcQrDataUrl} alt="WalletConnect QR code" />
-                    ) : null}
-                    {wcUri && (
-                      <button className="wc-copy" onClick={copyWcUri}>Copy pairing link</button>
+                    {phase === "wc" ? (
+                      <div className="wc-wait"><Spinner /> Waiting for the wallet picker…</div>
+                    ) : (
+                      <p className="wc-done">Connection cancelled. Pick a wallet again below.</p>
                     )}
-                    <p className="connect-network-note">Pairs with MetaMask, Rabby, or any WalletConnect-compatible mobile wallet.</p>
+                    <button className="connect-btn" onClick={openWalletConnect} disabled={phase === "wc"}>
+                      <MobileGlyph /> Open wallet picker
+                    </button>
+                    <p className="connect-network-note">Pairs with MetaMask, Rabby, or any WalletConnect-compatible wallet.</p>
                   </div>
                 )}
                 {notice && <p className="connect-notice" role="alert">{notice}</p>}
