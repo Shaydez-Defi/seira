@@ -4,6 +4,8 @@ import react from '@vitejs/plugin-react'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  // Expose WALLETCONNECT_PROJECT_ID (and VITE_-prefixed vars) to client code.
+  envPrefix: ['VITE_', 'WALLETCONNECT_'],
   server: {
     proxy: {
       // Forward API calls to the local API (same container) so the browser

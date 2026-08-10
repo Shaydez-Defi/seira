@@ -130,6 +130,84 @@ function isUnrecognizedChain(err) {
   return typeof err?.message === "string" && /unrecognized chain id/i.test(err.message);
 }
 
+/* WalletConnect v2 app metadata surfaced in the wallet's connection prompt. */
+const WALLET_CONNECT_METADATA = {
+  name: "Seira",
+  description: "Pay in what you hold. Land in what they want.",
+  url: typeof window !== "undefined" ? window.location.origin : "https://seira-app.vercel.app",
+  icons: [],
+};
+
+/**
+ * Ensures the given EIP-1193 provider is on Coston2, adding the chain if the
+ * wallet has never seen it. Used by both the injected-wallet and
+ * WalletConnect paths so network handling stays identical.
+ */
+async function ensureCoston2(request) {
+  const currentChain = await request({ method: "eth_chainId" });
+  if (currentChain === COSTON2_CHAIN_ID_HEX) {
+    return;
+  }
+  try {
+    await request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: COSTON2_CHAIN_ID_HEX }],
+    });
+  } catch (switchErr) {
+    if (!isUnrecognizedChain(switchErr)) {
+      throw switchErr;
+    }
+    try {
+      await request({
+        method: "wallet_addEthereumChain",
+        params: [COSTON2_NETWORK],
+      });
+    } catch (addErr) {
+      if (isUserRejected(addErr)) {
+        throw new Error(
+          "Adding the Coston2 testnet was declined. Add it manually in your wallet, then connect again.",
+          { cause: addErr }
+        );
+      }
+      throw addErr;
+    }
+  }
+  const chainAfter = await request({ method: "eth_chainId" });
+  if (chainAfter !== COSTON2_CHAIN_ID_HEX) {
+    throw new Error("Approve the switch to the Coston2 testnet to continue.");
+  }
+}
+
+/**
+ * Wraps an EIP-1193 provider (injected or WalletConnect) in a BrowserProvider,
+ * resolves the signer address, and reads on-chain FXRP/WFLR balances. Both
+ * connection paths share this so nothing downstream forks by method.
+ */
+async function resolveWalletSession(provider) {
+  const browser = new BrowserProvider(provider);
+  const signer = await browser.getSigner();
+  const address = await signer.getAddress();
+
+  const read = new JsonRpcProvider(COSTON2_RPC);
+  const fxrp = new Contract(FXRP_ADDRESS, ERC20_BALANCE_ABI, read);
+  const wflr = new Contract(WFLR_ADDRESS, ERC20_BALANCE_ABI, read);
+  const [fxrpRaw, wflrRaw] = await Promise.all([
+    fxrp.balanceOf(address),
+    wflr.balanceOf(address),
+  ]);
+
+  return {
+    address,
+    fxrp: formatTokenAmount(fxrpRaw),
+    wflr: formatTokenAmount(wflrRaw),
+  };
+}
+
+/** True when running in a mobile browser (used for WalletConnect deep-linking). */
+function isMobileDevice() {
+  return typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
 function SeiraMark({ size = 28, color = "var(--pink)" }) {
   return (
     <svg width={size} height={size * 0.66} viewBox="0 0 120 80" fill="none" aria-hidden="true">
@@ -522,6 +600,14 @@ function WalletGlyph() {
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path d="M3 7a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2v3h-4a2.5 2.5 0 0 0 0 5h4v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
       <circle cx="16.5" cy="12.5" r="1" fill="currentColor" />
+    </svg>
+  );
+}
+function MobileGlyph() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="7" y="2.5" width="10" height="19" rx="2.5" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M10.5 18.5h3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
     </svg>
   );
 }
@@ -1060,15 +1146,33 @@ function LandingScreen({ onStart }) {
 }
 
 function ConnectScreen({ session, setSession, onConnected, onDisconnect }) {
-  const [phase, setPhase] = useState(() => (session ? "connected" : "idle")); // idle | connecting | connected
+  const [phase, setPhase] = useState(() => (session ? "connected" : "idle")); // idle | connecting | wc | connected
   const [notice, setNotice] = useState(null);
+  const [wcMode, setWcMode] = useState(false); // true while the WalletConnect panel is shown
+  const [wcUri, setWcUri] = useState(null); // pairing URI for QR / deep-link
+  const [wcConnected, setWcConnected] = useState(false);
+  const [wcQrDataUrl, setWcQrDataUrl] = useState(null); // rendered QR for the pairing URI
+  const wcProviderRef = useRef(null);
 
-  const connect = useCallback(async () => {
+  const hasInjectedWallet =
+    typeof window !== "undefined" && typeof window.ethereum !== "undefined";
+
+  /* After a provider (injected or WalletConnect) is on Coston2 and accounts are
+     authorized, this finalizes the session. Shared by both paths so the
+     downstream flow never knows which method connected. */
+  const finalizeSession = useCallback(async (provider) => {
+    const sessionData = await resolveWalletSession(provider);
+    setSession(sessionData);
+    setPhase("connected");
+    setWcConnected(true);
+  }, [setSession]);
+
+  const connectInjected = useCallback(async () => {
     const ethereum = window.ethereum;
     if (!ethereum) {
       setPhase("idle");
       setNotice(
-        "No injected wallet found. Install MetaMask or another EIP-1193 wallet (Rabby, Coinbase, etc.) and reload, then connect."
+        "No injected wallet found. Install MetaMask or another EIP-1193 wallet (Rabby, Coinbase, etc.) and reload, then connect. You can also connect with a mobile wallet below."
       );
       return;
     }
@@ -1077,60 +1181,8 @@ function ConnectScreen({ session, setSession, onConnected, onDisconnect }) {
     setNotice(null);
     try {
       await ethereum.request({ method: "eth_requestAccounts" });
-
-      const currentChain = await ethereum.request({ method: "eth_chainId" });
-      if (currentChain !== COSTON2_CHAIN_ID_HEX) {
-        try {
-          await ethereum.request({
-            method: "wallet_switchEthereumChain",
-            params: [{ chainId: COSTON2_CHAIN_ID_HEX }],
-          });
-        } catch (switchErr) {
-          if (!isUnrecognizedChain(switchErr)) {
-            throw switchErr;
-          }
-          try {
-            await ethereum.request({
-              method: "wallet_addEthereumChain",
-              params: [COSTON2_NETWORK],
-            });
-          } catch (addErr) {
-            if (isUserRejected(addErr)) {
-              setNotice(
-                "Adding the Coston2 testnet was declined. Add it manually in your wallet, then connect again."
-              );
-              setPhase("idle");
-              return;
-            }
-            throw addErr;
-          }
-        }
-        const chainAfter = await ethereum.request({ method: "eth_chainId" });
-        if (chainAfter !== COSTON2_CHAIN_ID_HEX) {
-          setNotice("Approve the switch to the Coston2 testnet to continue.");
-          setPhase("idle");
-          return;
-        }
-      }
-
-      const provider = new BrowserProvider(ethereum);
-      const signer = await provider.getSigner();
-      const address = await signer.getAddress();
-
-      const read = new JsonRpcProvider(COSTON2_RPC);
-      const fxrp = new Contract(FXRP_ADDRESS, ERC20_BALANCE_ABI, read);
-      const wflr = new Contract(WFLR_ADDRESS, ERC20_BALANCE_ABI, read);
-      const [fxrpRaw, wflrRaw] = await Promise.all([
-        fxrp.balanceOf(address),
-        wflr.balanceOf(address),
-      ]);
-
-      setSession({
-        address,
-        fxrp: formatTokenAmount(fxrpRaw),
-        wflr: formatTokenAmount(wflrRaw),
-      });
-      setPhase("connected");
+      await ensureCoston2((args) => ethereum.request(args));
+      await finalizeSession(ethereum);
     } catch (err) {
       if (isUserRejected(err)) {
         setNotice(null);
@@ -1140,7 +1192,116 @@ function ConnectScreen({ session, setSession, onConnected, onDisconnect }) {
       setNotice(err?.message ?? "Could not connect to your wallet. Please try again.");
       setPhase("idle");
     }
+  }, [finalizeSession]);
+
+  const connectWalletConnect = useCallback(async () => {
+    const projectId = import.meta.env.WALLETCONNECT_PROJECT_ID;
+    if (!projectId) {
+      setPhase("idle");
+      setNotice(
+        "WALLETCONNECT_PROJECT_ID is not set. Create a free Project ID at https://cloud.walletconnect.com and add it to packages/frontend/.env to use mobile wallet connection."
+      );
+      return;
+    }
+
+    setPhase("wc");
+    setNotice(null);
+    setWcMode(true);
+    setWcUri(null);
+    setWcQrDataUrl(null);
+    setWcConnected(false);
+    try {
+      // Loaded on demand so the injected-wallet path never pays for this bundle.
+      const [{ default: EthereumProvider }] = await Promise.all([
+        import("@walletconnect/ethereum-provider"),
+      ]);
+      const provider = await EthereumProvider.init({
+        projectId,
+        chains: [114],
+        optionalChains: [114],
+        rpcMap: { 114: COSTON2_RPC },
+        showQrModal: false,
+        metadata: WALLET_CONNECT_METADATA,
+      });
+      wcProviderRef.current = provider;
+      provider.on("display_uri", (uri) => setWcUri(uri));
+
+      await provider.connect({ chains: [114] });
+
+      // Bring the wallet to Coston2 exactly like the injected path.
+      await ensureCoston2((args) => provider.request(args));
+      await finalizeSession(provider);
+    } catch (err) {
+      if (isUserRejected(err)) {
+        setNotice(null);
+      } else {
+        setNotice(err?.message ?? "Could not connect via WalletConnect. Please try again.");
+      }
+      setWcUri(null);
+      setWcQrDataUrl(null);
+      setPhase("idle");
+    }
+  }, [finalizeSession]);
+
+  const openWalletConnect = useCallback(() => {
+    setWcMode(true);
+    setNotice(null);
+    connectWalletConnect();
+  }, [connectWalletConnect]);
+
+  const closeWalletConnect = useCallback(() => {
+    setWcMode(false);
+    setWcUri(null);
+    setWcQrDataUrl(null);
+    setPhase("idle");
+    setNotice(null);
+    const provider = wcProviderRef.current;
+    if (provider && !wcConnected) {
+      provider.disconnect().catch(() => {});
+    }
+    wcProviderRef.current = null;
+  }, [wcConnected]);
+
+  const copyWcUri = useCallback(async () => {
+    if (!wcUri) return;
+    try {
+      await navigator.clipboard.writeText(wcUri);
+      setNotice("Pairing link copied. Open it in your wallet app.");
+    } catch {
+      setNotice("Could not copy the pairing link. Copy it manually below.");
+    }
+  }, [wcUri]);
+
+  /* Render the pairing QR once a WalletConnect URI arrives. */
+  useEffect(() => {
+    if (!wcUri) return undefined;
+    let cancelled = false;
+    import("qrcode").then((QRCode) =>
+      QRCode.toDataURL(wcUri, { margin: 1, width: 240, errorCorrectionLevel: "M" })
+        .then((dataUrl) => {
+          if (!cancelled) setWcQrDataUrl(dataUrl);
+        })
+        .catch(() => {
+          if (!cancelled) setWcQrDataUrl(null);
+        })
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [wcUri]);
+
+  /* Tear down a dangling WalletConnect provider when the screen unmounts. */
+  useEffect(() => {
+    return () => {
+      const provider = wcProviderRef.current;
+      if (provider) {
+        provider.disconnect().catch(() => {});
+      }
+      wcProviderRef.current = null;
+    };
   }, []);
+
+  const isMobile = isMobileDevice();
 
   const shortAddress =
     session && typeof session.address === "string"
@@ -1201,6 +1362,22 @@ function ConnectScreen({ session, setSession, onConnected, onDisconnect }) {
         .connect-btn:hover{ background:var(--pink-deep); }
         .connect-btn:active{ transform:scale(.98); }
         .connect-btn:disabled{ cursor:default; opacity:.85; }
+        .connect-btn--ghost{ background:transparent; color:var(--ink); border:1px solid var(--line); font-weight:600; }
+        .connect-btn--ghost:hover{ background:var(--paper-dim); }
+        .connect-or{ display:flex; align-items:center; gap:14px; color:var(--ink-faint); font-size:11.5px;
+          text-transform:uppercase; letter-spacing:.08em; margin:16px 0; }
+        .connect-or::before,.connect-or::after{ content:""; flex:1; height:1px; background:var(--line); }
+        .wc-panel{ margin-top:18px; border:1px solid var(--line); border-radius:14px; padding:18px; text-align:center; }
+        .wc-panel-head{ display:flex; align-items:center; justify-content:space-between; font-size:13px; color:var(--ink-soft); margin-bottom:12px; }
+        .wc-close{ background:none; border:none; cursor:pointer; font-size:18px; line-height:1; color:var(--ink-faint); padding:0 4px; }
+        .wc-close:hover{ color:var(--pink); }
+        .wc-qr{ width:200px; height:200px; border:1px solid var(--line); border-radius:10px; margin:6px auto 12px; display:block; }
+        .wc-wait{ display:flex; align-items:center; justify-content:center; gap:9px; color:var(--ink-soft); font-size:13.5px; padding:26px 0; }
+        .wc-mobile{ padding:6px 0 2px; }
+        .wc-mobile p{ font-size:13px; color:var(--ink-soft); margin:0 0 12px; }
+        .wc-open{ margin:0 auto; }
+        .wc-copy{ background:none; border:none; cursor:pointer; color:var(--pink-deep); font-size:12.5px; font-weight:600; padding:6px 0; }
+        .wc-copy:hover{ text-decoration:underline; }
         .connect-network-note{ font-size:12px; color:var(--ink-faint); margin-top:14px; }
         .connect-notice{ font-size:13px; color:var(--pink-deep); margin-top:14px; line-height:1.5; }
         .spin{ animation:spin .8s linear infinite; }
@@ -1262,9 +1439,48 @@ function ConnectScreen({ session, setSession, onConnected, onDisconnect }) {
                   Seira needs read access to check your balance and prepare a
                   settlement. Nothing moves until you confirm a payment.
                 </p>
-                <button className="connect-btn" onClick={connect} disabled={phase === "connecting"}>
-                  {phase === "connecting" ? <><Spinner /> Connecting</> : <><WalletGlyph /> Connect Wallet</>}
-                </button>
+                {hasInjectedWallet && (
+                  <button className="connect-btn" onClick={connectInjected} disabled={phase === "connecting" || phase === "wc"}>
+                    {phase === "connecting" ? <><Spinner /> Connecting</> : <><WalletGlyph /> Connect Wallet</>}
+                  </button>
+                )}
+                {!hasInjectedWallet && (
+                  <button className="connect-btn" onClick={openWalletConnect} disabled={phase === "wc"}>
+                    {phase === "wc" ? <><Spinner /> Connecting</> : <><WalletGlyph /> Connect Mobile Wallet</>}
+                  </button>
+                )}
+                {hasInjectedWallet && !wcMode && (
+                  <>
+                    <div className="connect-or"><span>or</span></div>
+                    <button className="connect-btn connect-btn--ghost" onClick={openWalletConnect} disabled={phase === "wc"}>
+                      <MobileGlyph /> Use a mobile wallet (WalletConnect)
+                    </button>
+                  </>
+                )}
+                {wcMode && !wcConnected && (
+                  <div className="wc-panel">
+                    <div className="wc-panel-head">
+                      <span>Scan with your wallet app</span>
+                      <button className="wc-close" onClick={closeWalletConnect} aria-label="Close WalletConnect panel">×</button>
+                    </div>
+                    {phase === "wc" && !wcUri ? (
+                      <div className="wc-wait"><Spinner /> Connecting to WalletConnect relay…</div>
+                    ) : isMobile ? (
+                      <div className="wc-mobile">
+                        <p>Pair this session in your wallet app:</p>
+                        <a className="connect-btn wc-open" href={wcUri ?? "#"} target="_blank" rel="noopener noreferrer">
+                          Open in wallet app
+                        </a>
+                      </div>
+                    ) : wcQrDataUrl ? (
+                      <img className="wc-qr" src={wcQrDataUrl} alt="WalletConnect QR code" />
+                    ) : null}
+                    {wcUri && (
+                      <button className="wc-copy" onClick={copyWcUri}>Copy pairing link</button>
+                    )}
+                    <p className="connect-network-note">Pairs with MetaMask, Rabby, or any WalletConnect-compatible mobile wallet.</p>
+                  </div>
+                )}
                 {notice && <p className="connect-notice" role="alert">{notice}</p>}
                 <p className="connect-network-note">Connects on Coston2 testnet.</p>
               </>
