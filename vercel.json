@@ -1,5 +1,0 @@
-{
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "node scripts/bundle-api.mjs && cd packages/frontend && npm run build",
-  "outputDirectory": "packages/frontend/dist"
-}

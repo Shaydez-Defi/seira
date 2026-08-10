@@ -1,10 +1,10 @@
 import { build } from "esbuild";
 import { rmSync } from "node:fs";
 
-await rmSync("api/index.js", { force: true });
+await rmSync("packages/frontend/api/index.js", { force: true });
 await build({
   entryPoints: ["scripts/api-entry.ts"],
-  outfile: "api/index.js",
+  outfile: "packages/frontend/api/index.js",
   bundle: true,
   platform: "node",
   format: "cjs",
@@ -14,4 +14,4 @@ await build({
     "process.env.VERCEL": JSON.stringify("1"),
   },
 });
-console.log("bundled api/index.ts -> api/index.js");
+console.log("bundled scripts/api-entry.ts -> packages/frontend/api/index.js");
