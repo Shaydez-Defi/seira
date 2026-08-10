@@ -79,7 +79,7 @@ async function main(): Promise<void> {
 
   const tokenStates: TokenState[] = [];
   for (const [name, address, decimals] of [
-    ["FXRP", FXRP_ADDRESS, 18n],
+    ["FXRP", FXRP_ADDRESS, 6n],
     ["USDT0", USDT0_ADDRESS, 6n],
     ["WFLR", WFLR_ADDRESS, 18n],
   ] as const) {
