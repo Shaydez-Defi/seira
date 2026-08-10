@@ -2,6 +2,8 @@
 
 Settlement infrastructure for crypto payments where the payer and payee hold different assets.
 
+Live demo: [seira-app.vercel.app](https://seira-app.vercel.app)
+
 ![Seira app](./docs/seira-landing-page.png)
 
 ## The problem
