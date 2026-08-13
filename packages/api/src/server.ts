@@ -19,6 +19,7 @@ import { CapabilityRegistry } from "../../registry/src/registry";
 import { seedRegistry } from "../../registry/src/seed";
 import { createExecutionRuntime } from "../../runtime/src/runtime";
 import type { ExecutionReceipt, RelayPermit } from "../../runtime/src/runtime";
+export type { ExecutionReceipt, RelayPermit } from "../../runtime/src/runtime";
 
 const STEP_ACTIONS = [
   "AcquireAsset",
@@ -64,6 +65,37 @@ export interface RuntimeLike {
     amountIn: string,
     adapterName: string
   ): Promise<QuoteResponse>;
+}
+
+/**
+ * Feeds the measured settlement wall-clock time back into the registry so
+ * future estimates track observed reality instead of static seed values.
+ * The total is distributed evenly across the plan's convert edges so the sum
+ * of per-edge latencyMs matches the measured end-to-end settlement time.
+ */
+function observeSettlementLatency(
+  registry: CapabilityRegistry,
+  plan: ExecutionPlan,
+  elapsedMs: number
+): void {
+  const convertSteps = plan.steps.filter((step) => step.action === "ConvertAsset");
+  if (convertSteps.length === 0) {
+    return;
+  }
+  const perStepMs = elapsedMs / convertSteps.length;
+  for (const step of convertSteps) {
+    if (step.from === undefined || step.to === undefined || step.preferredAdapter === undefined) {
+      continue;
+    }
+    const registered = registry
+      .getCapabilities(step.from, step.to)
+      .some((candidate) => candidate.adapter === step.preferredAdapter);
+    if (registered) {
+      registry.updateObserved([step.from, step.to], step.preferredAdapter, {
+        latencyMs: perStepMs,
+      });
+    }
+  }
 }
 
 export interface ApiDependencies {
@@ -119,10 +151,14 @@ export function createApp(deps: ApiDependencies): Express {
       const { plan, permit } = parseExecuteBody(req.body);
       let receipt: ExecutionReceipt;
       try {
+        const startedAt = Date.now();
         receipt =
           permit === undefined
             ? await deps.runtime.execute(plan)
             : await deps.runtime.executeRelayed(plan, permit);
+        if (receipt.status === "settled") {
+          observeSettlementLatency(deps.registry, plan, Date.now() - startedAt);
+        }
       } catch (error) {
         deps.logger.error(
           `execute ${plan.planId} failed with unexpected error: ${toMessage(error)}`

@@ -73,6 +73,7 @@ function stubRuntime(overrides: Partial<RuntimeLike> = {}): RuntimeLike {
 
 interface TestContext {
   app: ReturnType<typeof createApp>;
+  registry: CapabilityRegistry;
   logs: string[];
 }
 
@@ -86,7 +87,7 @@ function makeTestApp(runtime: RuntimeLike = stubRuntime()): TestContext {
     error: (message) => logs.push(`error:${message}`),
   };
   const app = createApp({ registry, planner: new ExecutionPlanner(), runtime, logger });
-  return { app, logs };
+  return { app, registry, logs };
 }
 
 describe("GET /api/health", () => {
@@ -342,6 +343,49 @@ describe("POST /api/execute", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/signature/);
+  });
+
+  it("feeds the measured settlement time back into the registry latency after a settled execution", async () => {
+    const plan = makePlan();
+    const convertStep = plan.steps.find((step) => step.action === "ConvertAsset");
+    if (convertStep?.from === undefined || convertStep.to === undefined) {
+      throw new Error("fixture plan must contain a ConvertAsset step");
+    }
+    const pair = [convertStep.from, convertStep.to] as [string, string];
+    const adapter = convertStep.preferredAdapter ?? "TestSwapAdapter";
+    const { app, registry } = makeTestApp();
+
+    const res = await request(app).post("/api/execute").send({ plan, intent: makeIntent() });
+
+    expect(res.status).toBe(200);
+    const [entry] = registry.getCapabilities(pair[0], pair[1]).filter((candidate) => candidate.adapter === adapter);
+    expect(entry.latencyMs).toBeLessThan(2500);
+  });
+
+  it("does not alter registry latency when execution rolls back", async () => {
+    const plan = makePlan();
+    const convertStep = plan.steps.find((step) => step.action === "ConvertAsset");
+    if (convertStep?.from === undefined || convertStep.to === undefined) {
+      throw new Error("fixture plan must contain a ConvertAsset step");
+    }
+    const pair = [convertStep.from, convertStep.to] as [string, string];
+    const adapter = convertStep.preferredAdapter ?? "TestSwapAdapter";
+    const { app, registry } = makeTestApp(
+      stubRuntime({
+        execute: async (receivedPlan) => ({
+          planId: receivedPlan.planId,
+          status: "rolled_back",
+          steps: [{ stepId: 1, status: "ok" }, { stepId: 2, status: "failed" }],
+          error: "rate not set",
+        }),
+      })
+    );
+
+    const res = await request(app).post("/api/execute").send({ plan, intent: makeIntent() });
+
+    expect(res.status).toBe(200);
+    const [entry] = registry.getCapabilities(pair[0], pair[1]).filter((candidate) => candidate.adapter === adapter);
+    expect(entry.latencyMs).toBe(2500);
   });
 });
 
