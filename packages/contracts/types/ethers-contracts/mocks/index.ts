@@ -2,3 +2,4 @@
 /* tslint:disable */
 /* eslint-disable */
 export type { MockERC20 } from './MockERC20.js';
+export type { MockPermitERC20 } from './MockPermitERC20.js';

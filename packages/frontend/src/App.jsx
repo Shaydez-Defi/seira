@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { BrowserProvider, Contract, MaxUint256, isAddress, JsonRpcProvider, formatUnits, parseUnits } from "ethers";
+import {
+  BrowserProvider,
+  Contract,
+  MaxUint256,
+  isAddress,
+  JsonRpcProvider,
+  formatUnits,
+  parseUnits,
+  getAddress,
+} from "ethers";
 /* ────────────────────────────────────────────────────────────
    SEIRA — design tokens
    Palette (capped 3 hues): ink, paper, pink (brand mark).
@@ -50,6 +59,7 @@ const NAV_SECTIONS = [
 /* Coston2 testnet — contract addresses and RPC used for balance reads.
    The addresses mirror packages/runtime/src/config.ts. */
 const COSTON2_CHAIN_ID_HEX = "0x72";
+const COSTON2_CHAIN_ID = 114;
 const COSTON2_RPC = "https://coston2-api.flare.network/ext/C/rpc";
 const FXRP_ADDRESS = "0x0b6A3645c240605887a5532109323A3E12273dc7";
 const USDT0_ADDRESS = "0xC1A5B41512496B80903D1f32d6dEa3a73212E71F";
@@ -67,6 +77,10 @@ const ERC20_EXEC_ABI = [
   "function allowance(address,address) view returns (uint256)",
   "function approve(address,uint256) returns (bool)",
   "function transfer(address,uint256) returns (bool)",
+];
+const ERC2612_ABI = [
+  "function nonces(address owner) view returns (uint256)",
+  "function permit(address owner,address spender,uint256 value,uint256 deadline,uint8 v,bytes32 r,bytes32 s)",
 ];
 const SWAP_ADAPTER_ABI = [
   "function quote(address,address,uint256) view returns (uint256)",
@@ -387,6 +401,96 @@ async function executePlanWithWallet(provider, plan) {
   }
 
   return { planId: plan.planId, status: "settled", steps: stepReceipts };
+}
+
+/** The EIP-712 Domain fields used by FXRP's ERC-2612 permit. */
+const FXRP_PERMIT_DOMAIN = {
+  name: "FXRP",
+  version: "1",
+  chainId: COSTON2_CHAIN_ID,
+  verifyingContract: FXRP_ADDRESS,
+};
+
+const ERC2612_PERMIT_TYPES = {
+  Permit: [
+    { name: "owner", type: "address" },
+    { name: "spender", type: "address" },
+    { name: "value", type: "uint256" },
+    { name: "nonce", type: "uint256" },
+    { name: "deadline", type: "uint256" },
+  ],
+};
+
+/** Unix seconds after which a freshly signed permit expires. */
+const PERMIT_DEADLINE_SECONDS = Math.floor(Date.now() / 1000) + 10 * 60;
+
+/**
+ * Executes a plan through the backend relayer using a single offline
+ * ERC-2612 permit signed by the connected wallet. The user taps once to sign
+ * the EIP-712 message (no gas); the backend replays it on-chain and pays gas.
+ * Returns the same receipt shape the direct execution produces.
+ */
+async function executeViaPermitRelay(provider, plan, intent, signerAddress) {
+  const browser = new BrowserProvider(provider);
+  const token = new Contract(FXRP_ADDRESS, ERC2612_ABI, browser);
+  const payerAsset = intent.payerAsset;
+  if (payerAsset !== "FXRP") {
+    throw new Error(`Payer asset ${payerAsset} does not support ERC-2612 permit relay`);
+  }
+  const needs = parseUnits(plan.estimatedPayerAmount, await tokenDecimalsOf(browser, payerAsset));
+
+  const baseUrl = resolveApiBaseUrl();
+  const relayerRes = await fetch(`${baseUrl}/api/relayer`);
+  if (!relayerRes.ok) {
+    throw new Error(`fetch /api/relayer failed (${relayerRes.status})`);
+  }
+  const relayerBody = await relayerRes.json().catch(() => null);
+  const spender = relayerBody?.address;
+  if (typeof spender !== "string" || !isAddress(spender)) {
+    throw new Error("relayer endpoint did not return a valid spender address");
+  }
+
+  const nonce = await token.nonces(signerAddress);
+  const message = {
+    owner: signerAddress,
+    spender,
+    value: needs,
+    nonce,
+    deadline: PERMIT_DEADLINE_SECONDS,
+  };
+
+  const signature = await browser
+    .getSigner()
+    .signTypedData(FXRP_PERMIT_DOMAIN, ERC2612_PERMIT_TYPES, message);
+
+  const executeRes = await fetch(`${baseUrl}/api/execute`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      plan,
+      intent,
+      permit: {
+        token: FXRP_ADDRESS,
+        owner: signerAddress,
+        spender,
+        value: needs.toString(),
+        nonce: nonce.toString(),
+        deadline: message.deadline,
+        signature,
+        domain: FXRP_PERMIT_DOMAIN,
+      },
+    }),
+  });
+  const data = await executeRes.json().catch(() => null);
+  if (!executeRes.ok) {
+    throw new Error(data?.error ?? `relayed execution failed (${executeRes.status})`);
+  }
+  return data;
+}
+
+/** Detects whether an error is a user rejection from a wallet signing prompt. */
+function isSignRejection(err) {
+  return typeof err === "object" && err !== null && "code" in err && err.code === 4001;
 }
 
 /** Extracts the Swap event's amountOut from a tx receipt for the given adapter. */
@@ -1947,13 +2051,23 @@ function ConfirmScreen({ payment, walletAddress, provider, onBack, onConfirm, on
     if (!plan || confirming) return;
     const intent = buildPaymentIntent(payment, walletAddress);
     setConfirming(true);
-    const promise = executePlanWithWallet(provider, plan)
-      .catch((err) => {
-        if (isUserRejected(err)) {
-          throw new Error("Transaction rejected in your wallet. No funds were moved.");
-        }
-        throw new Error(err?.message ?? "Execution failed to start. Please try again.");
-      });
+
+    const promise =
+      intent.payerAsset === "FXRP" && provider !== null
+        ? executeViaPermitRelay(provider, plan, intent, walletAddress)
+            .catch((err) => {
+              if (isSignRejection(err)) {
+                throw new Error("Signature request rejected in your wallet. No funds were moved.");
+              }
+              throw new Error(err?.message ?? "One-tap payment could not be submitted.");
+            })
+        : executePlanWithWallet(provider, plan).catch((err) => {
+            if (isSignRejection(err)) {
+              throw new Error("Signature request rejected in your wallet. No funds were moved.");
+            }
+            throw new Error(err?.message ?? "Execution failed to start. Please try again.");
+          });
+
     onConfirm({ plan, intent, promise });
   };
 

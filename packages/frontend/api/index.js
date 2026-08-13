@@ -34039,6 +34039,9 @@ var TypedDataEncoder = class _TypedDataEncoder {
     };
   }
 };
+function verifyTypedData(domain, types, value, signature) {
+  return recoverAddress(TypedDataEncoder.hash(domain, types, value), signature);
+}
 
 // node_modules/ethers/lib.esm/abi/fragments.js
 function setify(items) {
@@ -44813,7 +44816,12 @@ var ERC20_ABI = [
   "function balanceOf(address owner) external view returns (uint256)",
   "function allowance(address owner, address spender) external view returns (uint256)",
   "function approve(address spender, uint256 amount) external returns (bool)",
-  "function transfer(address to, uint256 amount) external returns (bool)"
+  "function transfer(address to, uint256 amount) external returns (bool)",
+  "function transferFrom(address from, address to, uint256 amount) external returns (bool)"
+];
+var ERC2612_ABI = [
+  "function nonces(address owner) external view returns (uint256)",
+  "function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external"
 ];
 var SWAP_ADAPTER_ABI = [
   "function quote(address tokenIn, address tokenOut, uint256 amountIn) external view returns (uint256 amountOut)",
@@ -44821,6 +44829,15 @@ var SWAP_ADAPTER_ABI = [
   "event Swap(address indexed tokenIn, address indexed tokenOut, uint256 amountIn, uint256 amountOut, address sender)"
 ];
 var SLIPPAGE_PPM_SCALE = 1000000n;
+var ERC2612_PERMIT_TYPES = {
+  Permit: [
+    { name: "owner", type: "address" },
+    { name: "spender", type: "address" },
+    { name: "value", type: "uint256" },
+    { name: "nonce", type: "uint256" },
+    { name: "deadline", type: "uint256" }
+  ]
+};
 var ExecutionBusinessError = class extends Error {
 };
 var ExecutionRuntime = class {
@@ -44909,6 +44926,96 @@ var ExecutionRuntime = class {
     } catch (error) {
       return this.handleFailure(plan, steps, stepReceipts, completedConverts, error);
     }
+  }
+  /**
+   * Returns the relayer address (the backend signer) that a payer must authorize
+   * as spender in an ERC-2612 permit for relayed execution.
+   */
+  async relayerAddress() {
+    return this.getSignerAddress();
+  }
+  /**
+   * Executes a plan funded by a single offline ERC-2612 permit signed by the
+   * payer instead of live token approvals. Verifies the signature, replays it
+   * on-chain (paying gas itself), pulls the payer asset into its own wallet,
+   * then runs the plan steps as usual.
+   */
+  async executeRelayed(plan, permit) {
+    const spender = await this.relayerAddress();
+    if (permit.spender.toLowerCase() !== spender.toLowerCase()) {
+      throw new ExecutionBusinessError(
+        `relayed execution failed: permit spender does not match the backend relayer`
+      );
+    }
+    const payerAsset = plan.steps.find((step) => step.action === "AcquireAsset")?.asset ?? plan.steps.find((step) => step.action === "ConvertAsset")?.from;
+    if (payerAsset === void 0) {
+      throw new Error(
+        `Plan ${plan.planId} has no AcquireAsset or ConvertAsset step to derive the payer asset`
+      );
+    }
+    const payerToken = this.resolveToken(payerAsset);
+    if (permit.token.toLowerCase() !== payerToken.toLowerCase()) {
+      throw new ExecutionBusinessError(
+        `relayed execution failed: permit token does not match payer asset ${payerAsset}`
+      );
+    }
+    const needed = parseUnits(plan.estimatedPayerAmount, await this.decimals(payerAsset));
+    const permitted = BigInt(permit.value);
+    if (permitted < needed) {
+      throw new ExecutionBusinessError(
+        `relayed execution failed: permit value ${formatUnits(permitted, await this.decimals(payerAsset))} ${payerAsset} is below the required ${plan.estimatedPayerAmount}`
+      );
+    }
+    const signerAddress = await this.getSignerAddress();
+    const erc2612 = this.erc2612At(payerToken);
+    const currentNonce = await erc2612.nonces(permit.owner);
+    if (BigInt(permit.nonce) !== currentNonce) {
+      throw new ExecutionBusinessError(
+        `relayed execution failed: stale permit nonce ${permit.nonce}, current is ${currentNonce}`
+      );
+    }
+    const recovered = verifyTypedData(
+      permit.domain,
+      ERC2612_PERMIT_TYPES,
+      {
+        owner: permit.owner,
+        spender: permit.spender,
+        value: permitted,
+        nonce: currentNonce,
+        deadline: permit.deadline
+      },
+      permit.signature
+    );
+    if (recovered.toLowerCase() !== permit.owner.toLowerCase()) {
+      throw new ExecutionBusinessError(
+        `relayed execution failed: permit signature does not match the owner ${permit.owner}`
+      );
+    }
+    const signature = Signature.from(permit.signature);
+    const permitTx = await erc2612.permit(
+      permit.owner,
+      permit.spender,
+      permitted,
+      permit.deadline,
+      signature.v,
+      signature.r,
+      signature.s
+    );
+    await this.waitForTx(permitTx, "permit(owner, relayer)");
+    const payerTokenContract = this.erc20At(payerToken);
+    const allowance = await payerTokenContract.allowance(permit.owner, signerAddress);
+    if (allowance < needed) {
+      throw new ExecutionBusinessError(
+        `relayed execution failed: smart-wallet permit left insufficient allowance (have ${formatUnits(allowance, await this.decimals(payerAsset))}, need ${plan.estimatedPayerAmount} ${payerAsset})`
+      );
+    }
+    const pullTx = await payerTokenContract.transferFrom(
+      permit.owner,
+      signerAddress,
+      needed
+    );
+    await this.waitForTx(pullTx, "transferFrom(payer, relayer)");
+    return this.execute(plan);
   }
   /**
    * Previews the output of converting an amount through the given adapter without
@@ -45101,6 +45208,9 @@ var ExecutionRuntime = class {
   erc20At(address) {
     return new Contract(address, ERC20_ABI, this.signer);
   }
+  erc2612At(address) {
+    return new Contract(address, ERC2612_ABI, this.signer);
+  }
   swapAdapterAt(address) {
     return new Contract(address, SWAP_ADAPTER_ABI, this.signer);
   }
@@ -45176,18 +45286,26 @@ function createApp(deps) {
   app.post(
     "/api/execute",
     asyncHandler(async (req, res) => {
-      const { plan } = parseExecuteBody(req.body);
+      const { plan, permit } = parseExecuteBody(req.body);
       let receipt;
       try {
-        receipt = await deps.runtime.execute(plan);
+        receipt = permit === void 0 ? await deps.runtime.execute(plan) : await deps.runtime.executeRelayed(plan, permit);
       } catch (error) {
         deps.logger.error(
           `execute ${plan.planId} failed with unexpected error: ${toMessage(error)}`
         );
         throw error;
       }
-      deps.logger.info(`execute ${plan.planId} outcome: ${receipt.status}`);
+      deps.logger.info(
+        `execute ${plan.planId} outcome: ${receipt.status}${permit === void 0 ? "" : " (relayed)"}`
+      );
       res.status(200).json(receipt);
+    })
+  );
+  app.get(
+    "/api/relayer",
+    asyncHandler(async (_req, res) => {
+      res.status(200).json({ address: await deps.runtime.relayerAddress() });
     })
   );
   app.get(
@@ -45288,7 +45406,64 @@ function parseExecuteBody(body) {
   if (!isRecord(body.plan)) {
     throw new ApiError(400, "plan is required and must be an object");
   }
-  return { plan: parseExecutionPlan(body.plan), intent: parsePaymentIntent(body.intent) };
+  const permit = body.permit === void 0 ? void 0 : parseRelayPermit(body.permit);
+  return { plan: parseExecutionPlan(body.plan), intent: parsePaymentIntent(body.intent), permit };
+}
+function parseRelayPermit(value) {
+  if (!isRecord(value)) {
+    throw new ApiError(400, "permit must be an object");
+  }
+  const token = requireNonEmptyString(value.token, "permit.token");
+  const owner = requireNonEmptyString(value.owner, "permit.owner");
+  const spender = requireNonEmptyString(value.spender, "permit.spender");
+  requireEthereumAddress(token, "permit.token");
+  requireEthereumAddress(owner, "permit.owner");
+  requireEthereumAddress(spender, "permit.spender");
+  const valueRaw = requireNonEmptyString(value.value, "permit.value");
+  if (!/^\d+$/.test(valueRaw)) {
+    throw new ApiError(400, "permit.value must be a non-negative integer string in the token's raw units");
+  }
+  const nonce = requireNonEmptyString(value.nonce, "permit.nonce");
+  if (!/^\d+$/.test(nonce)) {
+    throw new ApiError(400, "permit.nonce must be a non-negative integer string");
+  }
+  if (typeof value.deadline !== "number" || !Number.isFinite(value.deadline)) {
+    throw new ApiError(400, "permit.deadline must be a finite unix timestamp number");
+  }
+  const signature = requireNonEmptyString(value.signature, "permit.signature");
+  if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) {
+    throw new ApiError(400, "permit.signature must be a 65-byte hex r + s + v compact signature");
+  }
+  if (!isRecord(value.domain)) {
+    throw new ApiError(400, "permit.domain must be an object");
+  }
+  const domain = value.domain;
+  const name = requireNonEmptyString(domain.name, "permit.domain.name");
+  const version2 = requireNonEmptyString(domain.version, "permit.domain.version");
+  if (typeof domain.chainId !== "number" && !/^\d+$/.test(String(domain.chainId ?? ""))) {
+    throw new ApiError(400, "permit.domain.chainId must be a number or numeric string");
+  }
+  const chainId = Number(domain.chainId);
+  const verifyingContract = requireNonEmptyString(
+    domain.verifyingContract,
+    "permit.domain.verifyingContract"
+  );
+  requireEthereumAddress(verifyingContract, "permit.domain.verifyingContract");
+  return {
+    token,
+    owner,
+    spender,
+    value: valueRaw,
+    nonce,
+    deadline: value.deadline,
+    signature,
+    domain: { name, version: version2, chainId, verifyingContract }
+  };
+}
+function requireEthereumAddress(value, label) {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(value)) {
+    throw new ApiError(400, `${label} must be a valid Ethereum address`);
+  }
 }
 function parseExecutionPlan(body) {
   if (!isRecord(body)) {

@@ -12,3 +12,5 @@ export type { TestSwapAdapter } from './TestSwapAdapter.sol/TestSwapAdapter.js';
 export { TestSwapAdapter__factory } from './factories/TestSwapAdapter.sol/TestSwapAdapter__factory.js';
 export type { MockERC20 } from './mocks/MockERC20.js';
 export { MockERC20__factory } from './factories/mocks/MockERC20__factory.js';
+export type { MockPermitERC20 } from './mocks/MockPermitERC20.js';
+export { MockPermitERC20__factory } from './factories/mocks/MockPermitERC20__factory.js';

@@ -18,7 +18,7 @@ import { ExecutionPlanner, NoFeasibleRouteError } from "../../planner/src/planne
 import { CapabilityRegistry } from "../../registry/src/registry";
 import { seedRegistry } from "../../registry/src/seed";
 import { createExecutionRuntime } from "../../runtime/src/runtime";
-import type { ExecutionReceipt } from "../../runtime/src/runtime";
+import type { ExecutionReceipt, RelayPermit } from "../../runtime/src/runtime";
 
 const STEP_ACTIONS = [
   "AcquireAsset",
@@ -56,6 +56,8 @@ export const consoleLogger: Logger = {
 /** The subset of the ExecutionRuntime the API depends on, so tests can stub it. */
 export interface RuntimeLike {
   execute(plan: ExecutionPlan): Promise<ExecutionReceipt>;
+  executeRelayed(plan: ExecutionPlan, permit: RelayPermit): Promise<ExecutionReceipt>;
+  relayerAddress(): Promise<string>;
   quotePreview(
     fromAsset: string,
     toAsset: string,
@@ -114,18 +116,30 @@ export function createApp(deps: ApiDependencies): Express {
   app.post(
     "/api/execute",
     asyncHandler(async (req, res) => {
-      const { plan } = parseExecuteBody(req.body);
+      const { plan, permit } = parseExecuteBody(req.body);
       let receipt: ExecutionReceipt;
       try {
-        receipt = await deps.runtime.execute(plan);
+        receipt =
+          permit === undefined
+            ? await deps.runtime.execute(plan)
+            : await deps.runtime.executeRelayed(plan, permit);
       } catch (error) {
         deps.logger.error(
           `execute ${plan.planId} failed with unexpected error: ${toMessage(error)}`
         );
         throw error;
       }
-      deps.logger.info(`execute ${plan.planId} outcome: ${receipt.status}`);
+      deps.logger.info(
+        `execute ${plan.planId} outcome: ${receipt.status}${permit === undefined ? "" : " (relayed)"}`
+      );
       res.status(200).json(receipt);
+    })
+  );
+
+  app.get(
+    "/api/relayer",
+    asyncHandler(async (_req, res) => {
+      res.status(200).json({ address: await deps.runtime.relayerAddress() });
     })
   );
 
@@ -245,14 +259,80 @@ function parsePaymentIntent(body: unknown): PaymentIntent {
   return { intent: "payment", payerAsset, receiverAsset, receiverAmount, recipient, constraints };
 }
 
-function parseExecuteBody(body: unknown): { plan: ExecutionPlan; intent: PaymentIntent } {
+function parseExecuteBody(body: unknown): {
+  plan: ExecutionPlan;
+  intent: PaymentIntent;
+  permit?: RelayPermit;
+} {
   if (!isRecord(body)) {
     throw new ApiError(400, "request body must be a JSON object");
   }
   if (!isRecord(body.plan)) {
     throw new ApiError(400, "plan is required and must be an object");
   }
-  return { plan: parseExecutionPlan(body.plan), intent: parsePaymentIntent(body.intent) };
+  const permit = body.permit === undefined ? undefined : parseRelayPermit(body.permit);
+  return { plan: parseExecutionPlan(body.plan), intent: parsePaymentIntent(body.intent), permit };
+}
+
+function parseRelayPermit(value: unknown): RelayPermit {
+  if (!isRecord(value)) {
+    throw new ApiError(400, "permit must be an object");
+  }
+  const token = requireNonEmptyString(value.token, "permit.token");
+  const owner = requireNonEmptyString(value.owner, "permit.owner");
+  const spender = requireNonEmptyString(value.spender, "permit.spender");
+  requireEthereumAddress(token, "permit.token");
+  requireEthereumAddress(owner, "permit.owner");
+  requireEthereumAddress(spender, "permit.spender");
+
+  const valueRaw = requireNonEmptyString(value.value, "permit.value");
+  if (!/^\d+$/.test(valueRaw)) {
+    throw new ApiError(400, "permit.value must be a non-negative integer string in the token's raw units");
+  }
+  const nonce = requireNonEmptyString(value.nonce, "permit.nonce");
+  if (!/^\d+$/.test(nonce)) {
+    throw new ApiError(400, "permit.nonce must be a non-negative integer string");
+  }
+  if (typeof value.deadline !== "number" || !Number.isFinite(value.deadline)) {
+    throw new ApiError(400, "permit.deadline must be a finite unix timestamp number");
+  }
+  const signature = requireNonEmptyString(value.signature, "permit.signature");
+  if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) {
+    throw new ApiError(400, "permit.signature must be a 65-byte hex r + s + v compact signature");
+  }
+
+  if (!isRecord(value.domain)) {
+    throw new ApiError(400, "permit.domain must be an object");
+  }
+  const domain = value.domain as Record<string, unknown>;
+  const name = requireNonEmptyString(domain.name, "permit.domain.name");
+  const version = requireNonEmptyString(domain.version, "permit.domain.version");
+  if (typeof domain.chainId !== "number" && !/^\d+$/.test(String(domain.chainId ?? ""))) {
+    throw new ApiError(400, "permit.domain.chainId must be a number or numeric string");
+  }
+  const chainId = Number(domain.chainId);
+  const verifyingContract = requireNonEmptyString(
+    domain.verifyingContract,
+    "permit.domain.verifyingContract"
+  );
+  requireEthereumAddress(verifyingContract, "permit.domain.verifyingContract");
+
+  return {
+    token,
+    owner,
+    spender,
+    value: valueRaw,
+    nonce,
+    deadline: value.deadline,
+    signature,
+    domain: { name, version, chainId, verifyingContract },
+  };
+}
+
+function requireEthereumAddress(value: string, label: string): void {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(value)) {
+    throw new ApiError(400, `${label} must be a valid Ethereum address`);
+  }
 }
 
 function parseExecutionPlan(body: unknown): ExecutionPlan {

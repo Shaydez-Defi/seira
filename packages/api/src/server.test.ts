@@ -8,7 +8,26 @@ import { ExecutionPlanner } from "../../planner/src/planner";
 import { CapabilityRegistry } from "../../registry/src/registry";
 import { seedRegistry } from "../../registry/src/seed";
 import { createApp } from "./server";
-import type { Logger, RuntimeLike } from "./server";
+import type { Logger, RelayPermit, RuntimeLike } from "./server";
+
+function makePermit(owner: string): RelayPermit {
+  return {
+    token: "0x0000000000000000000000000000000000000001",
+    owner,
+    spender: "0x0000000000000000000000000000000000000003",
+    value: "100",
+    nonce: "0",
+    deadline: Math.floor(Date.now() / 1000) + 3600,
+    signature:
+      "0x" + "11".repeat(32) + "22".repeat(32) + "1b",
+    domain: {
+      name: "FXRP",
+      version: "1",
+      chainId: 114,
+      verifyingContract: "0x0000000000000000000000000000000000000001",
+    },
+  };
+}
 
 function makeIntent(overrides: Partial<PaymentIntent> = {}): PaymentIntent {
   return {
@@ -35,6 +54,12 @@ function stubRuntime(overrides: Partial<RuntimeLike> = {}): RuntimeLike {
       status: "settled",
       steps: plan.steps.map((step) => ({ stepId: step.stepId, status: "ok" as const })),
     }),
+    executeRelayed: async (plan) => ({
+      planId: plan.planId,
+      status: "settled",
+      steps: plan.steps.map((step) => ({ stepId: step.stepId, status: "ok" as const })),
+    }),
+    relayerAddress: async () => "0x0000000000000000000000000000000000000001",
     quotePreview: async (fromAsset, toAsset, amountIn, adapter) => ({
       fromAsset,
       toAsset,
@@ -274,6 +299,62 @@ describe("POST /api/execute", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/receiverAsset/);
+  });
+
+  it("routes a permit-bearing execution to the relayed runtime path", async () => {
+    const plan = makePlan();
+    const calls: string[] = [];
+    const { app } = makeTestApp(
+      stubRuntime({
+        executeRelayed: async (receivedPlan, permit) => {
+          calls.push(`relayed:${receivedPlan.planId}:${permit.owner}`);
+          return {
+            planId: receivedPlan.planId,
+            status: "settled",
+            steps: receivedPlan.steps.map((step) => ({
+              stepId: step.stepId,
+              status: "ok" as const,
+            })),
+          };
+        },
+      })
+    );
+    const permit = makePermit("0x0000000000000000000000000000000000000002");
+
+    const res = await request(app)
+      .post("/api/execute")
+      .send({ plan, intent: makeIntent(), permit });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ status: "settled" });
+    expect(calls).toEqual([`relayed:${plan.planId}:0x0000000000000000000000000000000000000002`]);
+  });
+
+  it("rejects a malformed relay permit signature with 400", async () => {
+    const { app } = makeTestApp();
+    const plan = makePlan();
+    const permit = makePermit("0x0000000000000000000000000000000000000002");
+    permit.signature = "0xdeadbeef";
+
+    const res = await request(app)
+      .post("/api/execute")
+      .send({ plan, intent: makeIntent(), permit });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/signature/);
+  });
+});
+
+describe("GET /api/relayer", () => {
+  it("returns the backend relayer address from the runtime", async () => {
+    const { app } = makeTestApp(
+      stubRuntime({ relayerAddress: async () => "0x0000000000000000000000000000000000000009" })
+    );
+
+    const res = await request(app).get("/api/relayer");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ address: "0x0000000000000000000000000000000000000009" });
   });
 });
 

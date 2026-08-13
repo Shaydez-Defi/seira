@@ -13,18 +13,22 @@ declare module "@nomicfoundation/hardhat-ethers/types" {
   getContractFactory(name: 'IERC20', signerOrOptions?: ethers.Signer | FactoryOptions): Promise<Contracts.IERC20__factory>
 getContractFactory(name: 'TestSwapAdapter', signerOrOptions?: ethers.Signer | FactoryOptions): Promise<Contracts.TestSwapAdapter__factory>
 getContractFactory(name: 'MockERC20', signerOrOptions?: ethers.Signer | FactoryOptions): Promise<Contracts.MockERC20__factory>
+getContractFactory(name: 'MockPermitERC20', signerOrOptions?: ethers.Signer | FactoryOptions): Promise<Contracts.MockPermitERC20__factory>
 
   getContractAt(name: 'IERC20', address: string | ethers.Addressable, signer?: ethers.Signer): Promise<Contracts.IERC20>
 getContractAt(name: 'TestSwapAdapter', address: string | ethers.Addressable, signer?: ethers.Signer): Promise<Contracts.TestSwapAdapter>
 getContractAt(name: 'MockERC20', address: string | ethers.Addressable, signer?: ethers.Signer): Promise<Contracts.MockERC20>
+getContractAt(name: 'MockPermitERC20', address: string | ethers.Addressable, signer?: ethers.Signer): Promise<Contracts.MockPermitERC20>
 
   deployContract(name: 'IERC20', signerOrOptions?: ethers.Signer | DeployContractOptions): Promise<Contracts.IERC20>
 deployContract(name: 'TestSwapAdapter', signerOrOptions?: ethers.Signer | DeployContractOptions): Promise<Contracts.TestSwapAdapter>
 deployContract(name: 'MockERC20', signerOrOptions?: ethers.Signer | DeployContractOptions): Promise<Contracts.MockERC20>
+deployContract(name: 'MockPermitERC20', signerOrOptions?: ethers.Signer | DeployContractOptions): Promise<Contracts.MockPermitERC20>
 
   deployContract(name: 'IERC20', args: any[], signerOrOptions?: ethers.Signer | DeployContractOptions): Promise<Contracts.IERC20>
 deployContract(name: 'TestSwapAdapter', args: any[], signerOrOptions?: ethers.Signer | DeployContractOptions): Promise<Contracts.TestSwapAdapter>
 deployContract(name: 'MockERC20', args: any[], signerOrOptions?: ethers.Signer | DeployContractOptions): Promise<Contracts.MockERC20>
+deployContract(name: 'MockPermitERC20', args: any[], signerOrOptions?: ethers.Signer | DeployContractOptions): Promise<Contracts.MockPermitERC20>
 
     // default types
     getContractFactory(

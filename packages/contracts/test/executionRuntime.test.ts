@@ -1,7 +1,7 @@
 import { expect } from "chai";
 import { network } from "hardhat";
 import type { ExecutionPlan } from "../../core/src/types.js";
-import type { ExecutionRuntimeDependencies } from "../../runtime/src/runtime.js";
+import type { ExecutionRuntimeDependencies, RelayPermit } from "../../runtime/src/runtime.js";
 import { ExecutionRuntime } from "../../runtime/src/runtime.js";
 
 interface TokenLike {
@@ -247,6 +247,223 @@ describe("ExecutionRuntime", function () {
     await expectRejectedWith(
       runtime.quotePreview("ETH", USDT0_SYMBOL, "1", ADAPTER_NAME),
       /Unknown asset symbol "ETH"/
+    );
+  });
+});
+
+describe("ExecutionRuntime permit relay", function () {
+  const PERMIT_VERSION = "1";
+  const ERC2612_PERMIT_TYPES = {
+    Permit: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+      { name: "value", type: "uint256" },
+      { name: "nonce", type: "uint256" },
+      { name: "deadline", type: "uint256" },
+    ],
+  };
+
+  interface PermitFixture {
+    runtime: ExecutionRuntime;
+    backend: Awaited<ReturnType<typeof ethers.getSigners>>[number];
+    payer: Awaited<ReturnType<typeof ethers.getSigners>>[number];
+    recipient: Awaited<ReturnType<typeof ethers.getSigners>>[number];
+    adapterAddress: string;
+    fxrpPermit: Awaited<ReturnType<typeof ethers.deployContract>>;
+    usdt0: Awaited<ReturnType<typeof ethers.deployContract>>;
+    chainId: number;
+  }
+
+  async function deployPermitFixture(): Promise<PermitFixture> {
+    const [owner, backend, recipient, payer] = await ethers.getSigners();
+
+    const fxrpPermit = await ethers.deployContract("MockPermitERC20", [
+      FXRP_SYMBOL,
+      FXRP_SYMBOL,
+      18,
+      PERMIT_VERSION,
+    ]);
+    const usdt0 = await ethers.deployContract("MockERC20", [USDT0_SYMBOL, USDT0_SYMBOL, 6]);
+    const adapter = await ethers.deployContract("TestSwapAdapter");
+
+    const fxrpAddress = await fxrpPermit.getAddress();
+    const usdt0Address = await usdt0.getAddress();
+    const adapterAddress = await adapter.getAddress();
+
+    await fxrpPermit.mint(payer.address, ethers.parseEther("1000"));
+    await fxrpPermit.mint(owner.address, ethers.parseEther("1000"));
+    await usdt0.mint(owner.address, ethers.parseUnits("1000000", 6));
+
+    await fxrpPermit.connect(owner).approve(adapterAddress, ethers.MaxUint256);
+    await usdt0.connect(owner).approve(adapterAddress, ethers.MaxUint256);
+    await adapter.fundLiquidity(fxrpAddress, ethers.parseEther("1000"));
+    await adapter.fundLiquidity(usdt0Address, ethers.parseUnits("1000000", 6));
+
+    await adapter.setRate(fxrpAddress, usdt0Address, ethers.parseUnits("2.5", 6));
+
+    const backendProvider = backend.provider;
+    if (backendProvider === null) {
+      throw new Error("hardhat backend signer has no provider");
+    }
+
+    const runtime = new ExecutionRuntime({
+      provider: backendProvider,
+      signer: backend,
+      adapters: { [ADAPTER_NAME]: adapterAddress },
+      tokens: {
+        [FXRP_SYMBOL]: fxrpAddress,
+        [USDT0_SYMBOL]: usdt0Address,
+      },
+    } as unknown as ExecutionRuntimeDependencies);
+
+    const networkInfo = await backendProvider.getNetwork();
+    return {
+      runtime,
+      backend,
+      payer,
+      recipient,
+      adapterAddress,
+      fxrpPermit,
+      usdt0,
+      chainId: Number(networkInfo.chainId),
+    };
+  }
+
+  async function buildPermit(
+    fixture: PermitFixture,
+    plan: ExecutionPlan,
+    overrides: Partial<RelayPermit> = {}
+  ): Promise<RelayPermit> {
+    const { payer, backend, fxrpPermit, chainId } = fixture;
+    const fxrpAddress = await fxrpPermit.getAddress();
+    const owner = payer.address;
+    const spender = backend.address;
+    const value = ethers.parseUnits(plan.estimatedPayerAmount, 18);
+    const nonce = await fxrpPermit.nonces(owner);
+    const deadline = Math.floor(Date.now() / 1000) + 3600;
+
+    const domain = {
+      name: FXRP_SYMBOL,
+      version: PERMIT_VERSION,
+      chainId,
+      verifyingContract: fxrpAddress,
+    };
+    const signature = await payer.signTypedData(domain, ERC2612_PERMIT_TYPES, {
+      owner,
+      spender,
+      value,
+      nonce,
+      deadline,
+    });
+
+    return {
+      token: fxrpAddress,
+      owner,
+      spender,
+      value: value.toString(),
+      nonce: nonce.toString(),
+      deadline,
+      signature,
+      domain,
+      ...overrides,
+    };
+  }
+
+  function makePermitPlan(planId: string, estimatedPayerAmount: string, estimatedOutput: string): ExecutionPlan {
+    return {
+      planId,
+      estimatedCost: "0.003",
+      estimatedTime: "2500",
+      estimatedOutput,
+      estimatedPayerAmount,
+      steps: [
+        { stepId: 1, action: "AcquireAsset", asset: FXRP_SYMBOL },
+        {
+          stepId: 2,
+          action: "ConvertAsset",
+          from: FXRP_SYMBOL,
+          to: USDT0_SYMBOL,
+          asset: USDT0_SYMBOL,
+          preferredAdapter: ADAPTER_NAME,
+          properties: { reversible: true },
+        },
+        { stepId: 3, action: "Transfer", asset: USDT0_SYMBOL, to: "" },
+        { stepId: 4, action: "VerifySettlement", asset: USDT0_SYMBOL },
+      ],
+    };
+  }
+
+  it("settles a single-hop plan funded by a single payer permit", async function () {
+    const fixture = await networkHelpers.loadFixture(deployPermitFixture);
+    const plan = makePermitPlan("plan-permit-success", "2", "5");
+    plan.steps[2] = { stepId: 3, action: "Transfer", asset: USDT0_SYMBOL, to: fixture.recipient.address };
+
+    const permit = await buildPermit(fixture, plan);
+
+    const receipt = await fixture.runtime.executeRelayed(plan, permit);
+
+    expect(receipt.status).to.equal("settled");
+    expect(receipt.steps.map((step) => step.status)).to.deep.equal(["ok", "ok", "ok", "ok"]);
+    expect(await fixture.usdt0.balanceOf(fixture.recipient.address)).to.equal(
+      ethers.parseUnits("5", 6)
+    );
+    expect(await fixture.fxrpPermit.balanceOf(fixture.payer.address)).to.equal(
+      ethers.parseEther("998")
+    );
+  });
+
+  it("rejects a relayed execution when the permit owner has insufficient funds", async function () {
+    const fixture = await networkHelpers.loadFixture(deployPermitFixture);
+    const plan = makePermitPlan("plan-permit-oversized", "2000", "2500");
+    plan.steps[2] = { stepId: 3, action: "Transfer", asset: USDT0_SYMBOL, to: fixture.recipient.address };
+
+    const permit = await buildPermit(fixture, plan);
+
+    await expectRejectedWith(fixture.runtime.executeRelayed(plan, permit), /insufficient balance/);
+  });
+
+  it("rejects a relayed execution when the permit signature is forged", async function () {
+    const fixture = await networkHelpers.loadFixture(deployPermitFixture);
+    const [forger] = await ethers.getSigners();
+    const plan = makePermitPlan("plan-permit-forged", "2", "5");
+    plan.steps[2] = { stepId: 3, action: "Transfer", asset: USDT0_SYMBOL, to: fixture.recipient.address };
+
+    const { payer, backend, fxrpPermit, chainId } = fixture;
+    const fxrpAddress = await fxrpPermit.getAddress();
+    const owner = payer.address;
+    const spender = backend.address;
+    const value = ethers.parseUnits(plan.estimatedPayerAmount, 18);
+    const nonce = await fxrpPermit.nonces(owner);
+    const deadline = Math.floor(Date.now() / 1000) + 3600;
+
+    const domain = {
+      name: FXRP_SYMBOL,
+      version: PERMIT_VERSION,
+      chainId,
+      verifyingContract: fxrpAddress,
+    };
+    const paramMessage = { owner, spender, value, nonce, deadline };
+    const forgedSignature = await forger.signTypedData(domain, ERC2612_PERMIT_TYPES, paramMessage);
+
+    const permit = await buildPermit(fixture, plan, { signature: forgedSignature });
+
+    await expectRejectedWith(
+      fixture.runtime.executeRelayed(plan, permit),
+      /permit signature does not match/
+    );
+  });
+
+  it("rejects a relayed execution when the spender is not the backend relayer", async function () {
+    const fixture = await networkHelpers.loadFixture(deployPermitFixture);
+    const [owner] = await ethers.getSigners();
+    const plan = makePermitPlan("plan-permit-wrong-spender", "2", "5");
+    plan.steps[2] = { stepId: 3, action: "Transfer", asset: USDT0_SYMBOL, to: fixture.recipient.address };
+
+    const permit = await buildPermit(fixture, plan, { spender: owner.address });
+
+    await expectRejectedWith(
+      fixture.runtime.executeRelayed(plan, permit),
+      /spender does not match/
     );
   });
 });

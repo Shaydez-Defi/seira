@@ -2,3 +2,4 @@
 /* tslint:disable */
 /* eslint-disable */
 export { MockERC20__factory } from './MockERC20__factory.js';
+export { MockPermitERC20__factory } from './MockPermitERC20__factory.js';

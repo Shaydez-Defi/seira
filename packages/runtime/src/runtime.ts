@@ -1,11 +1,13 @@
 import {
   Contract,
+  Signature,
   isError,
   JsonRpcProvider,
   MaxUint256,
   Wallet,
   formatUnits,
   parseUnits,
+  verifyTypedData,
 } from "ethers";
 import type {
   ContractTransactionResponse,
@@ -27,6 +29,12 @@ const ERC20_ABI = [
   "function allowance(address owner, address spender) external view returns (uint256)",
   "function approve(address spender, uint256 amount) external returns (bool)",
   "function transfer(address to, uint256 amount) external returns (bool)",
+  "function transferFrom(address from, address to, uint256 amount) external returns (bool)",
+] as const;
+
+const ERC2612_ABI = [
+  "function nonces(address owner) external view returns (uint256)",
+  "function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external",
 ] as const;
 
 const SWAP_ADAPTER_ABI = [
@@ -37,6 +45,17 @@ const SWAP_ADAPTER_ABI = [
 
 /** Scale factor used to express a slippage fraction as whole parts per million. */
 const SLIPPAGE_PPM_SCALE = 1_000_000n;
+
+/** The EIP-712 Permit struct fields shared by ERC-2612 tokens. */
+const ERC2612_PERMIT_TYPES: Record<string, Array<{ name: string; type: string }>> = {
+  Permit: [
+    { name: "owner", type: "address" },
+    { name: "spender", type: "address" },
+    { name: "value", type: "uint256" },
+    { name: "nonce", type: "uint256" },
+    { name: "deadline", type: "uint256" },
+  ],
+};
 
 /**
  * Thrown for expected business failures (insufficient balance, zero quote,
@@ -51,12 +70,26 @@ interface Erc20Contract {
   allowance(owner: string, spender: string): Promise<bigint>;
   approve(spender: string, amount: bigint): Promise<ContractTransactionResponse>;
   transfer(to: string, amount: bigint): Promise<ContractTransactionResponse>;
+  transferFrom(from: string, to: string, amount: bigint): Promise<ContractTransactionResponse>;
 }
 
 interface SwapAdapterContract {
   quote(tokenIn: string, tokenOut: string, amountIn: bigint): Promise<bigint>;
   swap(tokenIn: string, tokenOut: string, amountIn: bigint): Promise<ContractTransactionResponse>;
   interface: Interface;
+}
+
+interface Erc2612Contract {
+  nonces(owner: string): Promise<bigint>;
+  permit(
+    owner: string,
+    spender: string,
+    value: bigint,
+    deadline: number,
+    v: number,
+    r: string,
+    s: string
+  ): Promise<ContractTransactionResponse>;
 }
 
 export interface ExecutionRuntimeDependencies {
@@ -80,6 +113,38 @@ export interface ExecutionReceipt {
   status: "settled" | "failed" | "rolled_back";
   steps: StepReceipt[];
   error?: string;
+}
+
+/** EIP-712 domain over which an ERC-2612 permit is signed. */
+export interface PermitDomain {
+  name: string;
+  version: string;
+  chainId: number;
+  verifyingContract: string;
+}
+
+/**
+ * An offline ERC-2612 permit signed by the payer authorizing the relayer
+ * (backend wallet) to spend their payer asset, so the backend can execute
+ * the plan on-chain with a single user signature.
+ */
+export interface RelayPermit {
+  /** Payer asset token that the permit authorizes spending of. */
+  token: string;
+  /** Payer wallet that signed the permit. */
+  owner: string;
+  /** Relayer address permitted as spender (must match the backend signer). */
+  spender: string;
+  /** Raw token amount (in the token's smallest unit) being authorized. */
+  value: string;
+  /** Current on-chain nonce of the owner at signing time. */
+  nonce: string;
+  /** Unix timestamp (seconds) after which the permit is invalid. */
+  deadline: number;
+  /** 65-byte compact EIP-712 signature (r + s + v). */
+  signature: string;
+  /** EIP-712 domain used by the permit token. */
+  domain: PermitDomain;
 }
 
 interface CompletedConvert {
@@ -189,6 +254,110 @@ export class ExecutionRuntime {
     } catch (error) {
       return this.handleFailure(plan, steps, stepReceipts, completedConverts, error);
     }
+  }
+
+  /**
+   * Returns the relayer address (the backend signer) that a payer must authorize
+   * as spender in an ERC-2612 permit for relayed execution.
+   */
+  async relayerAddress(): Promise<string> {
+    return this.getSignerAddress();
+  }
+
+  /**
+   * Executes a plan funded by a single offline ERC-2612 permit signed by the
+   * payer instead of live token approvals. Verifies the signature, replays it
+   * on-chain (paying gas itself), pulls the payer asset into its own wallet,
+   * then runs the plan steps as usual.
+   */
+  async executeRelayed(plan: ExecutionPlan, permit: RelayPermit): Promise<ExecutionReceipt> {
+    const spender = await this.relayerAddress();
+    if (permit.spender.toLowerCase() !== spender.toLowerCase()) {
+      throw new ExecutionBusinessError(
+        `relayed execution failed: permit spender does not match the backend relayer`
+      );
+    }
+
+    const payerAsset =
+      plan.steps.find((step) => step.action === "AcquireAsset")?.asset ??
+      plan.steps.find((step) => step.action === "ConvertAsset")?.from;
+    if (payerAsset === undefined) {
+      throw new Error(
+        `Plan ${plan.planId} has no AcquireAsset or ConvertAsset step to derive the payer asset`
+      );
+    }
+    const payerToken = this.resolveToken(payerAsset);
+    if (permit.token.toLowerCase() !== payerToken.toLowerCase()) {
+      throw new ExecutionBusinessError(
+        `relayed execution failed: permit token does not match payer asset ${payerAsset}`
+      );
+    }
+
+    const needed = parseUnits(plan.estimatedPayerAmount, await this.decimals(payerAsset));
+    const permitted = BigInt(permit.value);
+    if (permitted < needed) {
+      throw new ExecutionBusinessError(
+        `relayed execution failed: permit value ${formatUnits(permitted, await this.decimals(payerAsset))} ` +
+          `${payerAsset} is below the required ${plan.estimatedPayerAmount}`
+      );
+    }
+
+    const signerAddress = await this.getSignerAddress();
+    const erc2612 = this.erc2612At(payerToken);
+    const currentNonce = await erc2612.nonces(permit.owner);
+    if (BigInt(permit.nonce) !== currentNonce) {
+      throw new ExecutionBusinessError(
+        `relayed execution failed: stale permit nonce ${permit.nonce}, current is ${currentNonce}`
+      );
+    }
+
+    const recovered = verifyTypedData(
+      permit.domain,
+      ERC2612_PERMIT_TYPES,
+      {
+        owner: permit.owner,
+        spender: permit.spender,
+        value: permitted,
+        nonce: currentNonce,
+        deadline: permit.deadline,
+      },
+      permit.signature
+    );
+    if (recovered.toLowerCase() !== permit.owner.toLowerCase()) {
+      throw new ExecutionBusinessError(
+        `relayed execution failed: permit signature does not match the owner ${permit.owner}`
+      );
+    }
+
+    const signature = Signature.from(permit.signature);
+    const permitTx = await erc2612.permit(
+      permit.owner,
+      permit.spender,
+      permitted,
+      permit.deadline,
+      signature.v,
+      signature.r,
+      signature.s
+    );
+    await this.waitForTx(permitTx, "permit(owner, relayer)");
+
+    const payerTokenContract = this.erc20At(payerToken);
+    const allowance = await payerTokenContract.allowance(permit.owner, signerAddress);
+    if (allowance < needed) {
+      throw new ExecutionBusinessError(
+        `relayed execution failed: smart-wallet permit left insufficient allowance` +
+          ` (have ${formatUnits(allowance, await this.decimals(payerAsset))}, ` +
+          `need ${plan.estimatedPayerAmount} ${payerAsset})`
+      );
+    }
+    const pullTx = await payerTokenContract.transferFrom(
+      permit.owner,
+      signerAddress,
+      needed
+    );
+    await this.waitForTx(pullTx, "transferFrom(payer, relayer)");
+
+    return this.execute(plan);
   }
 
   /**
@@ -431,6 +600,10 @@ export class ExecutionRuntime {
 
   private erc20At(address: string): Erc20Contract {
     return new Contract(address, ERC20_ABI, this.signer) as unknown as Erc20Contract;
+  }
+
+  private erc2612At(address: string): Erc2612Contract {
+    return new Contract(address, ERC2612_ABI, this.signer) as unknown as Erc2612Contract;
   }
 
   private swapAdapterAt(address: string): SwapAdapterContract {
