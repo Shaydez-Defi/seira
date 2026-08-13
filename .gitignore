@@ -4,3 +4,6 @@ dist/
 .env
 packages/contracts/artifacts/
 packages/contracts/cache/
+.aider*
+.vercel
+.env*
