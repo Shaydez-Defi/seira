@@ -240,6 +240,87 @@ async function resolveWalletSession(provider) {
   };
 }
 
+/* Persisted app state so a page refresh returns you to the same screen
+   instead of the landing page, without asking the wallet again. Only the
+   wallet kind (injected vs WalletConnect), the connected address, the active
+   screen, and the payment draft are stored — never a private key. */
+const SESSION_RESTORE_KEY = "seira.app.session.v1";
+
+function readPersistedSession() {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(SESSION_RESTORE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    // localStorage unavailable (blocked/private mode): behave as a cold start.
+    return null;
+  }
+}
+
+function writePersistedSession(value) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(SESSION_RESTORE_KEY, JSON.stringify(value));
+  } catch {
+    // Storage may be full or blocked; the running session still works fine.
+  }
+}
+
+function clearPersistedSession() {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(SESSION_RESTORE_KEY);
+  } catch {
+    // Nothing to clear if storage is unavailable.
+  }
+}
+
+/**
+ * Rebuilds the wallet-handle a previous page load left behind, without
+ * showing the wallet's connection modal. Injected wallets report already
+ * authorized accounts via eth_accounts; WalletConnect restores its session
+ * from persistent storage inside provider.init().
+ */
+async function restoreProvider(saved) {
+  if (saved?.kind === "wc") {
+    const projectId = import.meta.env.WALLETCONNECT_PROJECT_ID;
+    if (!projectId) {
+      throw new Error("WALLETCONNECT_PROJECT_ID is not set for session restore.");
+    }
+    const [{ default: EthereumProvider }] = await import("@walletconnect/ethereum-provider");
+    const provider = await EthereumProvider.init({
+      projectId,
+      chains: [114],
+      optionalChains: [114],
+      rpcMap: { 114: COSTON2_RPC },
+      metadata: WALLET_CONNECT_METADATA,
+      showQrModal: false,
+    });
+    if (!provider.session) {
+      throw new Error("No saved WalletConnect session to restore.");
+    }
+    await ensureCoston2((args) => provider.request(args));
+    return provider;
+  }
+  if (typeof window === "undefined" || !window.ethereum) {
+    throw new Error("No injected wallet available to restore.");
+  }
+  const accounts = await window.ethereum.request({ method: "eth_accounts" });
+  if (
+    !Array.isArray(accounts) ||
+    !accounts.some((a) => a.toLowerCase() === String(saved?.address).toLowerCase())
+  ) {
+    throw new Error("Wallet account is no longer authorized for Seira.");
+  }
+  await ensureCoston2((args) => window.ethereum.request(args));
+  return window.ethereum;
+}
+
+/** True when a persisted screen can be revisited after a reload. */
+function isRestorableScreen(screen) {
+  return screen === "connect" || screen === "create" || screen === "confirm";
+}
+
 /** Resolves a token/asset symbol to its Coston2 contract address. */
 function tokenAddressOf(symbol) {
   const address = TOKEN_ADDRESSES[symbol];
@@ -1462,9 +1543,9 @@ function ConnectScreen({ session, setSession, onConnected, onDisconnect }) {
   /* After a provider (injected or WalletConnect) is on Coston2 and accounts are
      authorized, this finalizes the session. Shared by both paths so the
      downstream flow never knows which method connected. */
-  const finalizeSession = useCallback(async (provider) => {
+  const finalizeSession = useCallback(async (provider, walletKind = "injected") => {
     const sessionData = await resolveWalletSession(provider);
-    setSession(sessionData);
+    setSession({ ...sessionData, walletKind });
     setPhase("connected");
     setWcConnected(true);
   }, [setSession]);
@@ -1530,7 +1611,7 @@ function ConnectScreen({ session, setSession, onConnected, onDisconnect }) {
 
       // Bring the wallet to Coston2 exactly like the injected path.
       await ensureCoston2((args) => provider.request(args));
-      await finalizeSession(provider);
+      await finalizeSession(provider, "wc");
     } catch (err) {
       if (isUserRejected(err)) {
         setNotice(null);
@@ -2621,15 +2702,66 @@ function MerchantScreen({ payment, execution, receipt, onBack, onDisconnect }) {
 }
 
 export default function SeiraApp() {
-  const [screen, setScreen] = useState("landing");
-  const [session, setSession] = useState(null); // { address, fxrp, wflr }
+  const [screen, setScreen] = useState(() => {
+    const saved = readPersistedSession();
+    return saved && isRestorableScreen(saved.screen) ? saved.screen : "landing";
+  });
+  const [session, setSession] = useState(null); // { address, fxrp, wflr, walletKind }
   const [execution, setExecution] = useState(null);
   const [merchantReceipt, setMerchantReceipt] = useState(null);
-  const [payment, setPayment] = useState({ ...DEFAULT_PAYMENT });
+  const [payment, setPayment] = useState(() => {
+    const saved = readPersistedSession();
+    return saved && saved.payment ? { ...DEFAULT_PAYMENT, ...saved.payment } : { ...DEFAULT_PAYMENT };
+  });
 
   const goTo = (s) => { setScreen(s); if (typeof window !== "undefined") window.scrollTo(0, 0); };
 
+  /* Persist the active screen + payment + wallet identity so a refresh (or a
+     closed tab) resumes where the user left off. Only written once a wallet
+     is connected, and cleared on disconnect. */
+  useEffect(() => {
+    if (!session?.address) return;
+    /* The status and merchant screens hold an in-flight execution promise that
+       cannot be resurrected after a reload, so a refresh from them lands on
+       the still-connected screen rather than dumping back to the landing page. */
+    const restorableScreen = isRestorableScreen(screen) ? screen : "connect";
+    writePersistedSession({
+      address: session.address,
+      walletKind: session.walletKind,
+      screen: restorableScreen,
+      payment,
+    });
+  }, [session?.address, session?.walletKind, screen, payment]);
+
+  useEffect(() => {
+    const saved = readPersistedSession();
+    if (!saved || !isRestorableScreen(saved.screen)) return;
+    let cancelled = false;
+    restoreProvider(saved)
+      .then((provider) => {
+        if (cancelled) {
+          provider.disconnect?.().catch(() => {});
+          return;
+        }
+        return resolveWalletSession(provider).then((sessionData) => {
+          if (cancelled) {
+            provider.disconnect?.().catch(() => {});
+            return;
+          }
+          setSession({ ...sessionData, walletKind: saved.walletKind ?? "injected" });
+          goTo(saved.screen);
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        clearPersistedSession();
+        goTo("landing");
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   const disconnect = () => {
+    clearPersistedSession();
     setSession(null);
     setPayment({ ...DEFAULT_PAYMENT });
     setExecution(null);
@@ -2640,7 +2772,7 @@ export default function SeiraApp() {
   const refreshSession = useCallback(async () => {
     if (!session?.provider) return;
     const refreshed = await resolveWalletSession(session.provider);
-    setSession((prev) => ({ ...(prev ?? {}), ...refreshed }));
+    setSession((prev) => ({ ...(prev ?? {}), ...refreshed, walletKind: prev?.walletKind }));
   }, [session?.provider, setSession]);
 
   return (
