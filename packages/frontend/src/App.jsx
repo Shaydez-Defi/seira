@@ -1537,6 +1537,16 @@ function ConnectScreen({ session, setSession, onConnected, onDisconnect }) {
   const [wcConnected, setWcConnected] = useState(false);
   const wcProviderRef = useRef(null);
 
+  /* When a wallet session is restored after a page refresh, it arrives on the
+     prop asynchronously. Flip the screen into the connected view so loading
+     the app keeps you where you were instead of showing the connect prompt. */
+  useEffect(() => {
+    if (session) {
+      setPhase("connected");
+      setWcConnected(true);
+    }
+  }, [session]);
+
   const hasInjectedWallet =
     typeof window !== "undefined" && typeof window.ethereum !== "undefined";
 
@@ -2104,6 +2114,15 @@ function ConfirmScreen({ payment, walletAddress, provider, onBack, onConfirm, on
 
   useEffect(() => {
     let cancelled = false;
+    /* After a page refresh the wallet session restores asynchronously, so the
+       walletAddress prop may arrive a moment after this screen mounts. Wait
+       for it instead of planning against an empty payer/recipient. */
+    if (!walletAddress) {
+      setPlan(null);
+      setPlanState("loading");
+      setPlanError(null);
+      return undefined;
+    }
     const intent = buildPaymentIntent(payment, walletAddress);
     fetch(`${resolveApiBaseUrl()}/api/plan`, {
       method: "POST",
@@ -2126,7 +2145,7 @@ function ConfirmScreen({ payment, walletAddress, provider, onBack, onConfirm, on
         setPlanState("error");
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [walletAddress, payment]);
 
   const handleConfirm = () => {
     if (!plan || confirming) return;
@@ -2704,7 +2723,8 @@ function MerchantScreen({ payment, execution, receipt, onBack, onDisconnect }) {
 export default function SeiraApp() {
   const [screen, setScreen] = useState(() => {
     const saved = readPersistedSession();
-    return saved && isRestorableScreen(saved.screen) ? saved.screen : "landing";
+    if (saved && saved.screen) return isRestorableScreen(saved.screen) ? saved.screen : "connect";
+    return "landing";
   });
   const [session, setSession] = useState(null); // { address, fxrp, wflr, walletKind }
   const [execution, setExecution] = useState(null);
@@ -2735,8 +2755,13 @@ export default function SeiraApp() {
 
   useEffect(() => {
     const saved = readPersistedSession();
-    if (!saved || !isRestorableScreen(saved.screen)) return;
+    if (!saved || !saved.screen) return;
     let cancelled = false;
+    /* The screen is already shown by the initializer; this effect only
+       silently reconnects the wallet so signing still works. On failure we
+       intentionally do not redirect or clear the saved state — the user
+       stays exactly where they were and can reconnect from the connect
+       screen if they ever need to sign. */
     restoreProvider(saved)
       .then((provider) => {
         if (cancelled) {
@@ -2749,13 +2774,10 @@ export default function SeiraApp() {
             return;
           }
           setSession({ ...sessionData, walletKind: saved.walletKind ?? "injected" });
-          goTo(saved.screen);
         });
       })
       .catch(() => {
-        if (cancelled) return;
-        clearPersistedSession();
-        goTo("landing");
+        /* No redirect: the saved screen is already mounted. */
       });
     return () => { cancelled = true; };
   }, []);
