@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { BrowserProvider, Contract, isAddress, JsonRpcProvider, formatUnits } from "ethers";
+import { BrowserProvider, Contract, MaxUint256, isAddress, JsonRpcProvider, formatUnits, parseUnits } from "ethers";
 /* ────────────────────────────────────────────────────────────
    SEIRA — design tokens
    Palette (capped 3 hues): ink, paper, pink (brand mark).
@@ -52,10 +52,26 @@ const NAV_SECTIONS = [
 const COSTON2_CHAIN_ID_HEX = "0x72";
 const COSTON2_RPC = "https://coston2-api.flare.network/ext/C/rpc";
 const FXRP_ADDRESS = "0x0b6A3645c240605887a5532109323A3E12273dc7";
+const USDT0_ADDRESS = "0xC1A5B41512496B80903D1f32d6dEa3a73212E71F";
 const WFLR_ADDRESS = "0xaB6FaD89389B73dBC887d31206A26Fd88d719d1F";
+const TEST_SWAP_ADAPTER_ADDRESS = "0x1A9e28052f54b300adC845AD244b2D17E8ECc947";
+const TOKEN_ADDRESSES = { FXRP: FXRP_ADDRESS, USDT0: USDT0_ADDRESS, WFLR: WFLR_ADDRESS };
+const ADAPTER_ADDRESSES = { TestSwapAdapter: TEST_SWAP_ADAPTER_ADDRESS };
 const ERC20_BALANCE_ABI = [
   "function balanceOf(address) view returns (uint256)",
   "function decimals() view returns (uint8)",
+];
+const ERC20_EXEC_ABI = [
+  "function decimals() view returns (uint8)",
+  "function balanceOf(address) view returns (uint256)",
+  "function allowance(address,address) view returns (uint256)",
+  "function approve(address,uint256) returns (bool)",
+  "function transfer(address,uint256) returns (bool)",
+];
+const SWAP_ADAPTER_ABI = [
+  "function quote(address,address,uint256) view returns (uint256)",
+  "function swap(address,address,uint256)",
+  "event Swap(address indexed tokenIn, address indexed tokenOut, uint256 amountIn, uint256 amountOut, address sender)",
 ];
 const COSTON2_NETWORK = {
   chainId: COSTON2_CHAIN_ID_HEX,
@@ -204,9 +220,192 @@ async function resolveWalletSession(provider) {
 
   return {
     address,
+    provider,
     fxrp: formatTokenAmount(fxrpRaw, fxrpDecimals),
     wflr: formatTokenAmount(wflrRaw, wflrDecimals),
   };
+}
+
+/** Resolves a token/asset symbol to its Coston2 contract address. */
+function tokenAddressOf(symbol) {
+  const address = TOKEN_ADDRESSES[symbol];
+  if (address === undefined) {
+    throw new Error(`Unknown asset symbol "${symbol}"`);
+  }
+  return address;
+}
+
+/** Resolves an adapter name to its Coston2 contract address. */
+function adapterAddressOf(name) {
+  const address = ADAPTER_ADDRESSES[name];
+  if (address === undefined) {
+    throw new Error(`Unknown adapter "${name}"`);
+  }
+  return address;
+}
+
+async function tokenDecimalsOf(signer, symbol) {
+  const token = new Contract(tokenAddressOf(symbol), ERC20_BALANCE_ABI, signer);
+  return Number(await token.decimals());
+}
+
+/** Builds a wallet-signed, on-chain execution of the given plan.
+ *
+ * Mirrors the backend runtime's execution steps (acquire/convert/transfer/
+ * verify) but signs every transaction with the connected wallet so the
+ * payer's own balance is the source of funds. Returns the same receipt
+ * shape the backend runtime produces.
+ */
+async function executePlanWithWallet(provider, plan) {
+  const browser = new BrowserProvider(provider);
+  const signer = await browser.getSigner();
+  const payerAddress = await signer.getAddress();
+
+  const steps = [...plan.steps].sort((a, b) => a.stepId - b.stepId);
+  const transferStep = steps.find((step) => step.action === "Transfer");
+  const recipient = transferStep?.to;
+  const receiverAsset =
+    transferStep?.asset ?? steps.find((step) => step.action === "VerifySettlement")?.asset;
+  if (transferStep === undefined || recipient === undefined || receiverAsset === undefined) {
+    throw new Error(`Plan ${plan.planId} has no Transfer step with a recipient and asset`);
+  }
+
+  const payerAsset =
+    steps.find((step) => step.action === "AcquireAsset")?.asset ??
+    steps.find((step) => step.action === "ConvertAsset")?.from;
+  if (payerAsset === undefined) {
+    throw new Error(
+      `Plan ${plan.planId} has no AcquireAsset or ConvertAsset step to derive the payer asset`
+    );
+  }
+
+  const receiverToken = new Contract(
+    tokenAddressOf(receiverAsset),
+    ERC20_EXEC_ABI,
+    signer
+  );
+  const recipientBefore = await receiverToken.balanceOf(recipient);
+
+  const stepReceipts = [];
+  let runningAmount = parseUnits(plan.estimatedPayerAmount, await tokenDecimalsOf(signer, payerAsset));
+
+  for (const step of steps) {
+    if (step.action === "AcquireAsset") {
+      const required = parseUnits(
+        plan.estimatedPayerAmount,
+        await tokenDecimalsOf(signer, payerAsset)
+      );
+      const token = new Contract(tokenAddressOf(payerAsset), ERC20_EXEC_ABI, signer);
+      const balance = await token.balanceOf(payerAddress);
+      if (balance < required) {
+        stepReceipts.push({ stepId: step.stepId, status: "failed" });
+        return {
+          planId: plan.planId,
+          status: "failed",
+          steps: stepReceipts,
+          error: `AcquireAsset step ${step.stepId} failed: insufficient balance of ${payerAsset} ` +
+            `(need ${plan.estimatedPayerAmount}, have ${formatUnits(balance, await tokenDecimalsOf(signer, payerAsset))})`,
+        };
+      }
+      stepReceipts.push({ stepId: step.stepId, status: "ok" });
+    } else if (step.action === "ConvertAsset") {
+      const fromSymbol = step.from;
+      const toSymbol = step.to;
+      const adapterName = step.preferredAdapter;
+      if (fromSymbol === undefined || toSymbol === undefined || adapterName === undefined) {
+        throw new Error(
+          `ConvertAsset step ${step.stepId} is missing from/to assets or a preferred adapter`
+        );
+      }
+      const fromAddress = tokenAddressOf(fromSymbol);
+      const toAddress = tokenAddressOf(toSymbol);
+      const adapterAddress = adapterAddressOf(adapterName);
+      const tokenIn = new Contract(fromAddress, ERC20_EXEC_ABI, signer);
+      const adapter = new Contract(adapterAddress, SWAP_ADAPTER_ABI, signer);
+
+      const quoted = await adapter.quote(fromAddress, toAddress, runningAmount);
+      if (quoted === 0n) {
+        stepReceipts.push({ stepId: step.stepId, status: "failed" });
+        return {
+          planId: plan.planId,
+          status: "failed",
+          steps: stepReceipts,
+          error: `ConvertAsset step ${step.stepId} failed: quote returned zero output ` +
+            `for ${fromSymbol} -> ${toSymbol} via ${adapterName}`,
+        };
+      }
+
+      const allowance = await tokenIn.allowance(payerAddress, adapterAddress);
+      if (allowance < runningAmount) {
+        const approveTx = await tokenIn.approve(adapterAddress, MaxUint256);
+        const approveReceipt = await approveTx.wait();
+        if (approveReceipt === null || approveReceipt.status !== 1) {
+          throw new Error(`approve ${fromSymbol} for ConvertAsset step ${step.stepId} failed`);
+        }
+      }
+
+      const swapTx = await adapter.swap(fromAddress, toAddress, runningAmount);
+      const swapReceipt = await swapTx.wait();
+      if (swapReceipt === null || swapReceipt.status !== 1) {
+        throw new Error(`ConvertAsset step ${step.stepId} swap failed (tx ${swapTx.hash})`);
+      }
+
+      const amountOut = parseSwapAmountOut(adapter.interface, swapReceipt, adapterAddress);
+      runningAmount = amountOut;
+      stepReceipts.push({
+        stepId: step.stepId,
+        status: "ok",
+        txHash: swapTx.hash,
+        actualAmount: formatUnits(amountOut, await tokenDecimalsOf(signer, toSymbol)),
+      });
+    } else if (step.action === "Transfer") {
+      const tx = await receiverToken.transfer(recipient, runningAmount);
+      const receipt = await tx.wait();
+      if (receipt === null || receipt.status !== 1) {
+        throw new Error(`Transfer step ${step.stepId} failed (tx ${tx.hash})`);
+      }
+      stepReceipts.push({
+        stepId: step.stepId,
+        status: "ok",
+        txHash: tx.hash,
+        actualAmount: formatUnits(runningAmount, await tokenDecimalsOf(signer, receiverAsset)),
+      });
+    } else {
+      const delta = (await receiverToken.balanceOf(recipient)) - recipientBefore;
+      if (delta < runningAmount) {
+        stepReceipts.push({ stepId: step.stepId, status: "failed" });
+        return {
+          planId: plan.planId,
+          status: "failed",
+          steps: stepReceipts,
+          error: `VerifySettlement step ${step.stepId} failed: recipient balance increased by ` +
+            `${formatUnits(delta, await tokenDecimalsOf(signer, receiverAsset))} ${receiverAsset}`,
+        };
+      }
+      stepReceipts.push({ stepId: step.stepId, status: "ok" });
+    }
+  }
+
+  return { planId: plan.planId, status: "settled", steps: stepReceipts };
+}
+
+/** Extracts the Swap event's amountOut from a tx receipt for the given adapter. */
+function parseSwapAmountOut(iface, receipt, adapterAddress) {
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() !== adapterAddress.toLowerCase()) {
+      continue;
+    }
+    const parsed = iface.parseLog(log);
+    if (parsed !== null && parsed.name === "Swap") {
+      const args = parsed.args;
+      const amountOut = args["amountOut"];
+      if (typeof amountOut !== "bigint") {
+        throw new Error("Swap event is missing a valid amountOut argument");
+      }
+      return amountOut;
+    }
+  }
+  throw new Error("no Swap event found in transaction receipt");
 }
 
 function SeiraMark({ size = 28, color = "var(--pink)" }) {
@@ -1706,7 +1905,7 @@ function CreateScreen({ payment, setPayment, onBack, onContinue, onDisconnect })
   );
 }
 
-function ConfirmScreen({ payment, walletAddress, onBack, onConfirm, onDisconnect }) {
+function ConfirmScreen({ payment, walletAddress, provider, onBack, onConfirm, onDisconnect }) {
   const [routeIn, setRouteIn] = useState(false);
   const [plan, setPlan] = useState(null);
   const [planState, setPlanState] = useState("loading"); // loading | ready | error
@@ -1748,15 +1947,13 @@ function ConfirmScreen({ payment, walletAddress, onBack, onConfirm, onDisconnect
     if (!plan || confirming) return;
     const intent = buildPaymentIntent(payment, walletAddress);
     setConfirming(true);
-    const promise = fetch(`${resolveApiBaseUrl()}/api/execute`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ plan, intent }),
-    }).then(async (res) => {
-      const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(data?.error ?? `execute request failed (${res.status})`);
-      return data;
-    });
+    const promise = executePlanWithWallet(provider, plan)
+      .catch((err) => {
+        if (isUserRejected(err)) {
+          throw new Error("Transaction rejected in your wallet. No funds were moved.");
+        }
+        throw new Error(err?.message ?? "Execution failed to start. Please try again.");
+      });
     onConfirm({ plan, intent, promise });
   };
 
@@ -1955,7 +2152,7 @@ function ConfirmScreen({ payment, walletAddress, onBack, onConfirm, onDisconnect
   );
 }
 
-function StatusScreen({ payment, execution, onDone, onViewMerchant, onDisconnect }) {
+function StatusScreen({ payment, execution, onDone, onViewMerchant, onDisconnect, onSettled }) {
   const [receipt, setReceipt] = useState(null);
   const [execError, setExecError] = useState(null);
 
@@ -1963,7 +2160,12 @@ function StatusScreen({ payment, execution, onDone, onViewMerchant, onDisconnect
     let cancelled = false;
     execution.promise
       .then((r) => {
-        if (!cancelled) setReceipt(r);
+        if (!cancelled) {
+          setReceipt(r);
+          if (r.status === "settled" && typeof onSettled === "function") {
+            onSettled();
+          }
+        }
       })
       .catch((err) => {
         if (cancelled) return;
@@ -2321,6 +2523,12 @@ export default function SeiraApp() {
     goTo("landing");
   };
 
+  const refreshSession = useCallback(async () => {
+    if (!session?.provider) return;
+    const refreshed = await resolveWalletSession(session.provider);
+    setSession((prev) => ({ ...(prev ?? {}), ...refreshed }));
+  }, [session?.provider, setSession]);
+
   return (
     <>
       {screen === "landing" && <LandingScreen onStart={() => goTo("connect")} />}
@@ -2345,6 +2553,7 @@ export default function SeiraApp() {
         <ConfirmScreen
           payment={payment}
           walletAddress={session?.address ?? ""}
+          provider={session?.provider ?? null}
           onBack={() => goTo("create")}
           onConfirm={(exec) => { setExecution(exec); goTo("status"); }}
           onDisconnect={disconnect}
@@ -2357,6 +2566,7 @@ export default function SeiraApp() {
           onDone={() => { setExecution(null); goTo("connect"); }}
           onViewMerchant={(receipt) => { setMerchantReceipt(receipt); goTo("merchant"); }}
           onDisconnect={disconnect}
+          onSettled={refreshSession}
         />
       )}
       {screen === "merchant" && (
