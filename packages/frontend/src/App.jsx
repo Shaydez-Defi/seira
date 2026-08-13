@@ -540,9 +540,8 @@ async function executeViaPermitRelay(provider, plan, intent, signerAddress) {
     deadline: PERMIT_DEADLINE_SECONDS,
   };
 
-  const signature = await browser
-    .getSigner()
-    .signTypedData(FXRP_PERMIT_DOMAIN, ERC2612_PERMIT_TYPES, message);
+  const signer = await browser.getSigner();
+  const signature = await signer.signTypedData(FXRP_PERMIT_DOMAIN, ERC2612_PERMIT_TYPES, message);
 
   const executeRes = await fetch(`${baseUrl}/api/execute`, {
     method: "POST",
