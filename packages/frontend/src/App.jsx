@@ -613,6 +613,50 @@ function ArrowUpRight({ size = 14 }) {
   );
 }
 
+function CopyGlyph({ size = 12 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="9" y="9" width="11" height="11" rx="2" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M5 15V6a1 1 0 0 1 1-1h8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** Copies the raw tx hash to the clipboard and flashes a confirmation label. */
+function CopyableHash({ hash }) {
+  const [copied, setCopied] = useState(false);
+  if (typeof hash !== "string" || !/^0x/i.test(hash)) {
+    return <span>{hash || "—"}</span>;
+  }
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(hash);
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = hash;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <button
+      type="button"
+      className={`copy-hash ${copied ? "is-copied" : ""}`}
+      onClick={copy}
+      title="Copy transaction hash"
+    >
+      <span className="copy-hash-label">{copied ? "Copied" : shortHash(hash)}</span>
+      <span className="copy-hash-icon">{copied ? <Check size={10} /> : <CopyGlyph size={11} />}</span>
+    </button>
+  );
+}
+
 function Check({ size = 14, color = "var(--pink)" }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -2419,7 +2463,6 @@ function StatusScreen({ payment, execution, onDone, onViewMerchant, onDisconnect
 
   const convertReceipt = convertStep ? receipt?.steps.find((s) => s.stepId === convertStep.stepId) : null;
   const route = `${execution.intent.payerAsset} → ${convertStep?.preferredAdapter ?? "Seira Router"} → ${execution.intent.receiverAsset}`;
-  const txHashShort = convertReceipt?.txHash ? shortHash(convertReceipt.txHash) : "—";
 
   const label = pending ? "Settling your payment to" : settled ? "Payment complete" : "Payment did not settle";
   const headline = pending
@@ -2495,7 +2538,14 @@ function StatusScreen({ payment, execution, onDone, onViewMerchant, onDisconnect
         .st-received-v span{ font-family:var(--font-mono); font-size:14px; color:var(--pink-deep); margin-left:8px; }
         .st-meta-row{ display:flex; justify-content:space-between; padding:9px 0; border-top:1px solid var(--line); font-size:12.5px; }
         .st-meta-k{ color:var(--ink-soft); }
-        .st-meta-v{ font-family:var(--font-mono); color:var(--ink); }
+        .st-meta-v{ font-family:var(--font-mono); color:var(--ink); display:flex; align-items:center; gap:7px; }
+        .copy-hash{ display:inline-flex; align-items:center; gap:6px; font-family:var(--font-mono); color:var(--ink);
+          background:none; border:none; padding:2px 0; cursor:pointer; transition:color .15s var(--ease-out); }
+        .copy-hash:hover{ color:var(--pink-deep); }
+        .copy-hash .copy-hash-icon{ display:inline-flex; color:var(--ink-faint); transition:color .15s var(--ease-out); }
+        .copy-hash:hover .copy-hash-icon{ color:var(--pink-deep); }
+        .copy-hash.is-copied{ color:var(--pink-deep); }
+        .copy-hash.is-copied .copy-hash-icon{ color:var(--pink); }
 
         .st-actions{ display:flex; align-items:center; justify-content:space-between; gap:20px; }
         .st-done-btn{ flex:1; font-size:15px; font-weight:600; color:var(--paper); background:var(--ink);
@@ -2576,7 +2626,7 @@ function StatusScreen({ payment, execution, onDone, onViewMerchant, onDisconnect
                       <div className="st-received-k">Merchant received</div>
                       <div className="st-received-v">{payment.amount}<span>{payment.receiveAsset}</span></div>
                       <div className="st-meta-row"><span className="st-meta-k">Route</span><span className="st-meta-v">{route}</span></div>
-                      <div className="st-meta-row"><span className="st-meta-k">Transaction</span><span className="st-meta-v">{txHashShort}</span></div>
+                      <div className="st-meta-row"><span className="st-meta-k">Transaction</span><span className="st-meta-v"><CopyableHash hash={convertReceipt?.txHash} /></span></div>
                       <div className="st-meta-row"><span className="st-meta-k">Settled in</span><span className="st-meta-v">Settled</span></div>
                     </div>
                     <div className="st-actions">
@@ -2614,7 +2664,6 @@ function MerchantScreen({ payment, execution, receipt, onBack, onDisconnect }) {
   const convertStep = plan?.steps.find((s) => s.action === "ConvertAsset");
   const convertReceipt = receipt?.steps.find((s) => convertStep && s.stepId === convertStep.stepId);
   const route = `${execution?.intent.payerAsset ?? payment.buyerAsset} → ${convertStep?.preferredAdapter ?? "Seira Router"} → ${execution?.intent.receiverAsset ?? payment.receiveAsset}`;
-  const txHashShort = convertReceipt?.txHash ? shortHash(convertReceipt.txHash) : "—";
 
   return (
     <div className="app-shell">
@@ -2669,7 +2718,14 @@ function MerchantScreen({ payment, execution, receipt, onBack, onDisconnect }) {
         .mr-proof-row{ display:flex; justify-content:space-between; align-items:baseline; padding:8px 0; font-size:12.5px; }
         .mr-proof-row + .mr-proof-row{ border-top:1px solid var(--line); }
         .mr-proof-k{ color:var(--ink-soft); }
-        .mr-proof-v{ font-family:var(--font-mono); color:var(--ink); }
+        .mr-proof-v{ font-family:var(--font-mono); color:var(--ink); display:flex; align-items:center; gap:7px; }
+        .copy-hash{ display:inline-flex; align-items:center; gap:6px; font-family:var(--font-mono); color:var(--ink);
+          background:none; border:none; padding:2px 0; cursor:pointer; transition:color .15s var(--ease-out); }
+        .copy-hash:hover{ color:var(--pink-deep); }
+        .copy-hash .copy-hash-icon{ display:inline-flex; color:var(--ink-faint); transition:color .15s var(--ease-out); }
+        .copy-hash:hover .copy-hash-icon{ color:var(--pink-deep); }
+        .copy-hash.is-copied{ color:var(--pink-deep); }
+        .copy-hash.is-copied .copy-hash-icon{ color:var(--pink); }
 
         .mr-back{ display:inline-flex; align-items:center; gap:7px; font-size:13.5px; font-weight:600;
           color:var(--ink-soft); background:none; border:none; cursor:pointer;
@@ -2706,7 +2762,7 @@ function MerchantScreen({ payment, execution, receipt, onBack, onDisconnect }) {
 
             <div className="mr-proof">
               <div className="mr-proof-row"><span className="mr-proof-k">Settlement route</span><span className="mr-proof-v">{route}</span></div>
-              <div className="mr-proof-row"><span className="mr-proof-k">Transaction</span><span className="mr-proof-v">{txHashShort}</span></div>
+              <div className="mr-proof-row"><span className="mr-proof-k">Transaction</span><span className="mr-proof-v"><CopyableHash hash={convertReceipt?.txHash} /></span></div>
               <div className="mr-proof-row"><span className="mr-proof-k">Settled in</span><span className="mr-proof-v">Settled</span></div>
               <div className="mr-proof-row"><span className="mr-proof-k">Network</span><span className="mr-proof-v">Coston2</span></div>
             </div>
