@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { BrowserProvider, Contract, JsonRpcProvider, formatUnits } from "ethers";
+import { BrowserProvider, Contract, isAddress, JsonRpcProvider, formatUnits } from "ethers";
 /* ────────────────────────────────────────────────────────────
    SEIRA — design tokens
    Palette (capped 3 hues): ink, paper, pink (brand mark).
@@ -96,12 +96,13 @@ function formatTokenAmount(raw, decimals) {
 
 /** Builds the PaymentIntent the API expects from the current payment draft. */
 function buildPaymentIntent(payment, walletAddress) {
+  const recipient = isAddress(payment.recipient) ? payment.recipient : walletAddress;
   return {
     intent: "payment",
     payerAsset: payment.buyerAsset,
     receiverAsset: payment.receiveAsset,
     receiverAmount: payment.amount,
-    recipient: walletAddress || payment.recipient,
+    recipient,
     constraints: {},
   };
 }
