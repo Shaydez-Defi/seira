@@ -102,8 +102,8 @@ const COSTON2_EXPLORER_URL = "https://coston2-explorer.flare.network";
 const LICENSE_URL = `${GITHUB_REPO_URL}/blob/main/LICENSE`;
 
 const DEFAULT_PAYMENT = {
-  recipient: "Coffee House",
-  amount: "25",
+  recipient: "",
+  amount: "",
   receiveAsset: "USDT0",
   buyerAsset: "FXRP",
   convertedAmount: "",
