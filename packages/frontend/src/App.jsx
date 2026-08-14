@@ -244,7 +244,7 @@ async function resolveWalletSession(provider) {
    instead of the landing page, without asking the wallet again. Only the
    wallet kind (injected vs WalletConnect), the connected address, the active
    screen, and the payment draft are stored — never a private key. */
-const SESSION_RESTORE_KEY = "seira.app.session.v1";
+const SESSION_RESTORE_KEY = "seira.app.session.v2";
 
 function readPersistedSession() {
   if (typeof window === "undefined") return null;
